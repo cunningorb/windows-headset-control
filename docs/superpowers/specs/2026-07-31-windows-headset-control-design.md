@@ -145,8 +145,10 @@ Candidates are ranked by evidence read from the descriptor:
 
 1. Usage page in the vendor-defined range `0xFF00`–`0xFFFF`.
 2. Non-zero feature report length **or** non-zero output report length.
-3. Report length consistent with a substantial payload rather than a few control bytes.
+3. Largest feature-or-output report length among the vendor-defined candidates. A control channel carrying structured commands has a wider report than a collection carrying a handful of state bytes; where two candidates tie, both are reported and neither is auto-selected.
 4. Not a telephony, consumer, or generic-desktop usage page.
+
+If no candidate satisfies criteria 1 and 2, `list` reports that no control collection could be identified and `probe` refuses to run rather than guessing.
 
 `headsetctl list` prints the ranking together with the reason for each score. `headsetctl probe --candidate <index>` overrides the automatic choice. The observed capabilities of both vendor-defined collections are recorded in `docs/device-research.md` as evidence, with the selection rationale written out.
 
