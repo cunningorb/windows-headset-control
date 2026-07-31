@@ -1,0 +1,13 @@
+/target/
+**/*.rs.bk
+*.pdb
+
+# Signing material must never be committed
+*.pfx
+*.p12
+*.key
+*.snk
+signing.env
+
+# Local build/release output
+/dist/
