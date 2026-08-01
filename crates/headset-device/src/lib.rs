@@ -4,6 +4,7 @@ pub mod backend;
 pub mod error;
 pub mod fake;
 pub mod model;
+pub mod select;
 
 #[cfg(windows)]
 pub mod windows;
@@ -12,6 +13,7 @@ pub use backend::{HidBackend, HidTransport};
 pub use error::DeviceError;
 pub use fake::FakeHidBackend;
 pub use model::{CollectionInfo, DeviceId, OpenMode, ReportItem, ReportKind};
+pub use select::{has_unambiguous_winner, rank_candidates, stable_sort_collections, Candidate};
 
 #[cfg(windows)]
 pub use windows::WindowsHidBackend;
