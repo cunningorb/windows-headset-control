@@ -1,0 +1,9 @@
+# `insta`'s dev-dependency chain pulls in `tempfile` -> `getrandom` 0.4, whose
+# default Windows backend links `bcryptprimitives.dll` via `raw-dylib`. On the
+# `x86_64-pc-windows-gnu` target that requires `dlltool.exe`, which is not
+# available in this environment (see Global Constraints in the Phase 1 plan
+# regarding `windows` 0.59+ and `raw-dylib`). Select getrandom's legacy
+# `advapi32.dll` backend instead, which links normally against the prebuilt
+# GNU import library and needs no `dlltool`.
+[target.x86_64-pc-windows-gnu]
+rustflags = ["--cfg", "getrandom_backend=\"windows_legacy\""]

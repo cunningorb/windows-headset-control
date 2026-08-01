@@ -1,0 +1,43 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/headset-protocol",
+    "crates/headset-device",
+    "crates/headset-cli",
+    "crates/headset-tray",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+publish = false
+license = "UNLICENSED"
+
+[workspace.dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+insta = { version = "1", features = ["json"] }
+
+# Pinned to 0.58 deliberately. See Global Constraints.
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Threading",
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Devices_HumanInterfaceDevice",
+] }
+
+[profile.release]
+strip = "debuginfo"
+lto = "thin"
+codegen-units = 1
+panic = "abort"

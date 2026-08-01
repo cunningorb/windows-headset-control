@@ -1,0 +1,25 @@
+[package]
+name = "headset-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "headsetctl"
+path = "src/main.rs"
+
+[dependencies]
+headset-device = { path = "../headset-device" }
+headset-protocol = { path = "../headset-protocol" }
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
