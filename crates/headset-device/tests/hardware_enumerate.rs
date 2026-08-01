@@ -20,4 +20,8 @@ fn enumerates_at_least_one_collection() {
         .enumerate()
         .expect("enumeration succeeds");
     assert!(!all.is_empty(), "expected at least one HID collection");
+    assert!(
+        all.iter().any(|c| c.vendor_id != 0),
+        "descriptor reads produced no attributes"
+    );
 }

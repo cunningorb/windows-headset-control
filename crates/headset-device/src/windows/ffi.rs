@@ -86,7 +86,9 @@ pub fn enumerate_interface_paths() -> Result<Vec<String>, DeviceError> {
                 continue;
             }
 
-            let mut buf = vec![0u8; required as usize];
+            // u32 matches align_of::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>() == 4, which a
+            // Vec<u8> allocation does not guarantee.
+            let mut buf = vec![0u32; (required as usize).div_ceil(4)];
             let detail = buf.as_mut_ptr() as *mut SP_DEVICE_INTERFACE_DETAIL_DATA_W;
             (*detail).cbSize = size_of::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>() as u32;
             if SetupDiGetDeviceInterfaceDetailW(devinfo, &iface, Some(detail), required, None, None)
@@ -96,8 +98,11 @@ pub fn enumerate_interface_paths() -> Result<Vec<String>, DeviceError> {
             }
 
             let path_ptr = (&raw const (*detail).DevicePath) as *const u16;
+            let max_chars = (required as usize
+                - std::mem::offset_of!(SP_DEVICE_INTERFACE_DETAIL_DATA_W, DevicePath))
+                / 2;
             let mut len = 0usize;
-            while *path_ptr.add(len) != 0 && len < 2048 {
+            while len < max_chars && *path_ptr.add(len) != 0 {
                 len += 1;
             }
             paths.push(String::from_utf16_lossy(std::slice::from_raw_parts(
