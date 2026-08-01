@@ -81,8 +81,9 @@ pub fn enumerate_interface_paths() -> Result<Vec<String>, DeviceError> {
                 Some(&mut required),
                 None,
             );
-            // Reject implausible sizes rather than allocating whatever we are told.
-            if required == 0 || required > 4096 {
+            // 6 = offset_of!(DevicePath) + one u16 terminator; anything smaller is
+            // malformed and would underflow the max_chars computation below.
+            if !(6..=4096).contains(&required) {
                 continue;
             }
 
