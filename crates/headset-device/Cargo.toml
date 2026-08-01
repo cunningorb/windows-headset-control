@@ -9,11 +9,9 @@ license.workspace = true
 [dependencies]
 headset-protocol = { path = "../headset-protocol" }
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true }
-
-[dev-dependencies]
-serde_json = { workspace = true }

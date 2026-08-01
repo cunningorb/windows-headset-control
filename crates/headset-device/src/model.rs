@@ -228,6 +228,6 @@ mod tests {
         // Output reports: only 3
         assert_eq!(c.report_ids(ReportKind::Output), vec![3]);
         // Feature reports: none
-        assert_eq!(c.report_ids(ReportKind::Feature), vec![]);
+        assert_eq!(c.report_ids(ReportKind::Feature), Vec::<u8>::new());
     }
 }
