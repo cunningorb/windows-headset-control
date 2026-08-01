@@ -4,20 +4,32 @@ use sha2::{Digest, Sha256};
 /// Controls whether machine-identifying values reach the output.
 ///
 /// `main.rs` is a placeholder until Task 7 wires real commands on top of
-/// this type, so most of the API below is unused for now; `allow(dead_code)`
-/// keeps clippy quiet without adding behaviour ahead of that task.
-#[allow(dead_code)]
+/// this type, so most of the API below is unused by production code for
+/// now (the unit tests below do exercise `path`/`serial`/the field, so
+/// their `expect` is scoped to `not(test)`). Each unused item carries its
+/// own `#[expect(dead_code)]`: deliberately, item-scoped, and
+/// self-expiring — once Task 7 actually calls an item from production
+/// code, its expectation goes unfulfilled and `-D warnings` turns that
+/// into a build failure, forcing the attribute's removal instead of
+/// leaving dead-code detection blinded.
 #[derive(Clone, Copy, Debug)]
 pub struct Redactor {
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "read once Task 7 wires real commands on Redactor")
+    )]
     include_sensitive: bool,
 }
 
-#[allow(dead_code)]
 impl Redactor {
     pub fn new(include_sensitive: bool) -> Self {
         Self { include_sensitive }
     }
 
+    #[expect(
+        dead_code,
+        reason = "called once Task 7 wires real commands on Redactor"
+    )]
     pub fn include_sensitive(&self) -> bool {
         self.include_sensitive
     }
@@ -25,6 +37,13 @@ impl Redactor {
     /// Device paths identify a machine and a USB topology. By default they are
     /// reduced to a truncated, unsalted SHA-256 so records still correlate
     /// across runs and across bug reports without leaking the value.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "called once Task 7 wires real commands on Redactor"
+        )
+    )]
     pub fn path(&self, id: &DeviceId) -> String {
         if self.include_sensitive {
             return id.raw().to_string();
@@ -37,6 +56,13 @@ impl Redactor {
     }
 
     /// Presence is reported; the value never is unless explicitly requested.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "called once Task 7 wires real commands on Redactor"
+        )
+    )]
     pub fn serial(&self, present: bool) -> String {
         match (present, self.include_sensitive) {
             (false, _) => "<absent>".to_string(),
@@ -46,6 +72,10 @@ impl Redactor {
     }
 
     /// Header printed above any output that contains machine-identifying data.
+    #[expect(
+        dead_code,
+        reason = "called once Task 7 wires real commands on Redactor"
+    )]
     pub fn warning_banner(&self) -> Option<&'static str> {
         self.include_sensitive.then_some(
             "WARNING: --include-sensitive is set. This output contains machine-identifying \
@@ -103,5 +133,15 @@ mod tests {
         let digest = out.strip_prefix("path:sha256:").unwrap();
         assert_eq!(digest.len(), 8);
         assert!(digest.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn redaction_is_case_insensitive() {
+        let lower = DeviceId::new(PATH);
+        let upper = DeviceId::new(PATH.to_ascii_uppercase());
+        assert_eq!(
+            Redactor::new(false).path(&lower),
+            Redactor::new(false).path(&upper)
+        );
     }
 }
