@@ -15,11 +15,17 @@ fn sorted() -> Vec<CollectionInfo> {
     all
 }
 
+/// All absolute indices into `all`, in order — the "no filter applied" case.
+fn all_indices(all: &[CollectionInfo]) -> Vec<usize> {
+    (0..all.len()).collect()
+}
+
 #[test]
 fn list_human_output_is_stable() {
     let all = sorted();
     let ranked = rank_candidates(&all);
-    let out = render_list(&all, &ranked, &Redactor::new(false), false);
+    let shown = all_indices(&all);
+    let out = render_list(&all, &ranked, &shown, &Redactor::new(false), false);
     insta::assert_snapshot!("list_human", out);
 }
 
@@ -27,7 +33,8 @@ fn list_human_output_is_stable() {
 fn list_json_output_is_stable() {
     let all = sorted();
     let ranked = rank_candidates(&all);
-    let out = render_list(&all, &ranked, &Redactor::new(false), true);
+    let shown = all_indices(&all);
+    let out = render_list(&all, &ranked, &shown, &Redactor::new(false), true);
     insta::assert_snapshot!("list_json", out);
 }
 
@@ -35,7 +42,8 @@ fn list_json_output_is_stable() {
 fn list_json_has_the_documented_envelope() {
     let all = sorted();
     let ranked = rank_candidates(&all);
-    let out = render_list(&all, &ranked, &Redactor::new(false), true);
+    let shown = all_indices(&all);
+    let out = render_list(&all, &ranked, &shown, &Redactor::new(false), true);
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(v["schema_version"], 1);
     assert!(v["collections"].is_array());
@@ -65,11 +73,32 @@ fn list_json_has_the_documented_envelope() {
 }
 
 #[test]
+fn list_index_survives_filtering() {
+    // The index labelling each row must be its absolute index into the full
+    // sorted enumeration, not its position within the filtered/shown subset —
+    // otherwise the index printed by `list` cannot be fed back into
+    // `inspect --path-index` unchanged.
+    let all = sorted();
+    let ranked = rank_candidates(&all);
+    let control_index = all.iter().position(|c| c.usage_page == 0xFF14).unwrap();
+
+    // Filter down to just the control collection, as `--vendor-id`/`--product-id` would.
+    let shown = vec![control_index];
+    let out = render_list(&all, &ranked, &shown, &Redactor::new(false), true);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let collections = v["collections"].as_array().unwrap();
+    assert_eq!(collections.len(), 1);
+    assert_eq!(collections[0]["index"], control_index);
+    assert_eq!(v["best_candidate_index"], control_index);
+}
+
+#[test]
 fn no_output_contains_a_raw_path_by_default() {
     let all = sorted();
     let ranked = rank_candidates(&all);
+    let shown = all_indices(&all);
     for json in [false, true] {
-        let out = render_list(&all, &ranked, &Redactor::new(false), json);
+        let out = render_list(&all, &ranked, &shown, &Redactor::new(false), json);
         assert!(!out.contains("fixture"), "raw path fragment leaked");
         assert!(
             !out.to_lowercase().contains("\\\\?\\hid#"),
@@ -81,18 +110,31 @@ fn no_output_contains_a_raw_path_by_default() {
 #[test]
 fn inspect_human_output_is_stable() {
     let all = sorted();
-    let control = all.iter().find(|c| c.usage_page == 0xFF14).unwrap();
-    let out = render_inspect(control, &Redactor::new(false), false);
+    let index = all.iter().position(|c| c.usage_page == 0xFF14).unwrap();
+    let control = &all[index];
+    let out = render_inspect(index, control, &Redactor::new(false), false);
+    assert!(!out.contains("fixture"), "raw path fragment leaked");
+    assert!(
+        !out.to_lowercase().contains("\\\\?\\hid#"),
+        "raw path leaked"
+    );
     insta::assert_snapshot!("inspect_human", out);
 }
 
 #[test]
 fn inspect_json_reports_declared_report_ids() {
     let all = sorted();
-    let control = all.iter().find(|c| c.usage_page == 0xFF14).unwrap();
-    let out = render_inspect(control, &Redactor::new(false), true);
+    let index = all.iter().position(|c| c.usage_page == 0xFF14).unwrap();
+    let control = &all[index];
+    let out = render_inspect(index, control, &Redactor::new(false), true);
+    assert!(!out.contains("fixture"), "raw path fragment leaked");
+    assert!(
+        !out.to_lowercase().contains("\\\\?\\hid#"),
+        "raw path leaked"
+    );
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["index"], index);
     let items = v["report_items"].as_array().unwrap();
     assert!(items
         .iter()

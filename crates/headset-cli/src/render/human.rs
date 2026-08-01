@@ -4,13 +4,18 @@ use headset_device::{Candidate, CollectionInfo, ReportKind};
 
 use crate::redact::Redactor;
 
-pub fn render_list(all: &[CollectionInfo], ranked: &[Candidate], r: &Redactor) -> String {
+pub fn render_list(
+    all: &[CollectionInfo],
+    ranked: &[Candidate],
+    shown: &[usize],
+    r: &Redactor,
+) -> String {
     let mut s = String::new();
     if let Some(w) = r.warning_banner() {
         let _ = writeln!(s, "{w}\n");
     }
 
-    if all.is_empty() {
+    if shown.is_empty() {
         let _ = writeln!(s, "No HID collections found.");
         return s;
     }
@@ -18,7 +23,8 @@ pub fn render_list(all: &[CollectionInfo], ranked: &[Candidate], r: &Redactor) -
     let by_index: std::collections::HashMap<usize, &Candidate> =
         ranked.iter().map(|c| (c.index, c)).collect();
 
-    for (i, c) in all.iter().enumerate() {
+    for &i in shown {
+        let c = &all[i];
         let _ = writeln!(
             s,
             "[{i}] {}",
@@ -72,8 +78,13 @@ pub fn render_list(all: &[CollectionInfo], ranked: &[Candidate], r: &Redactor) -
         let _ = writeln!(s);
     }
 
-    if headset_device::has_unambiguous_winner(ranked) {
-        if let Some(best) = ranked.iter().find(|c| c.disqualified.is_none()) {
+    let shown_ranked: Vec<Candidate> = ranked
+        .iter()
+        .filter(|c| shown.contains(&c.index))
+        .cloned()
+        .collect();
+    if headset_device::has_unambiguous_winner(&shown_ranked) {
+        if let Some(best) = shown_ranked.iter().find(|c| c.disqualified.is_none()) {
             let _ = writeln!(s, "Best control candidate: index {}", best.index);
         }
     } else {

@@ -30,5 +30,5 @@ pub fn run(
         Err(e) => tracing::warn!("descriptor open failed: {e}"),
     }
 
-    Ok(render::render_inspect(c, r, as_json))
+    Ok(render::render_inspect(args.path_index, c, r, as_json))
 }

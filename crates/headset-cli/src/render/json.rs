@@ -35,19 +35,28 @@ pub fn collection_value(
     })
 }
 
-pub fn render_list(all: &[CollectionInfo], ranked: &[Candidate], r: &Redactor) -> String {
+pub fn render_list(
+    all: &[CollectionInfo],
+    ranked: &[Candidate],
+    shown: &[usize],
+    r: &Redactor,
+) -> String {
     let by_index: std::collections::HashMap<usize, &Candidate> =
         ranked.iter().map(|c| (c.index, c)).collect();
-    let collections: Vec<Value> = all
+    let collections: Vec<Value> = shown
         .iter()
-        .enumerate()
-        .map(|(i, c)| collection_value(i, c, by_index.get(&i).copied(), r))
+        .map(|&i| collection_value(i, &all[i], by_index.get(&i).copied(), r))
         .collect();
 
-    let best = ranked
+    let shown_ranked: Vec<Candidate> = ranked
+        .iter()
+        .filter(|c| shown.contains(&c.index))
+        .cloned()
+        .collect();
+    let best = shown_ranked
         .iter()
         .find(|c| c.disqualified.is_none())
-        .filter(|_| headset_device::has_unambiguous_winner(ranked))
+        .filter(|_| headset_device::has_unambiguous_winner(&shown_ranked))
         .map(|c| c.index);
 
     serde_json::to_string_pretty(&json!({
@@ -59,7 +68,7 @@ pub fn render_list(all: &[CollectionInfo], ranked: &[Candidate], r: &Redactor) -
     .expect("serialization cannot fail")
 }
 
-pub fn render_inspect(c: &CollectionInfo, r: &Redactor) -> String {
+pub fn render_inspect(index: usize, c: &CollectionInfo, r: &Redactor) -> String {
     let items: Vec<Value> = c
         .report_items
         .iter()
@@ -77,7 +86,7 @@ pub fn render_inspect(c: &CollectionInfo, r: &Redactor) -> String {
         })
         .collect();
 
-    let mut root = collection_value(0, c, None, r);
+    let mut root = collection_value(index, c, None, r);
     root["schema_version"] = json!(SCHEMA_VERSION);
     root["report_items"] = json!(items);
     root["opened_for_io"] = json!(false);
