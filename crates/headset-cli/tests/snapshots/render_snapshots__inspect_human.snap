@@ -1,0 +1,20 @@
+---
+source: crates/headset-cli/tests/render_snapshots.rs
+assertion_line: 68
+expression: out
+---
+BlackShark V3 Pro PS HID
+  manufacturer   : Razer Inc
+  vendor/product : 0x1532 / 0x101b
+  version        : 0x0100
+  usage page/usg : 0xff14 / 0x0001
+  reports in/out/feat : 64 / 64 / 0
+  serial         : <present, redacted>
+  path           : path:sha256:292600f7
+  opened for I/O : no (descriptor access only)
+  Input report ids : 0x02
+  Output report ids : 0x02
+  Feature report ids : -
+  declared items :
+    Input value  id=0x02 page=0xff14 usage=0x0000..0x0000 bits=8 count=63
+    Output value  id=0x02 page=0xff14 usage=0x0000..0x0000 bits=8 count=63

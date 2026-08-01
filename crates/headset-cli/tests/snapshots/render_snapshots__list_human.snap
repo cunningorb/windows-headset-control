@@ -1,0 +1,42 @@
+---
+source: crates/headset-cli/tests/render_snapshots.rs
+assertion_line: 21
+expression: out
+---
+[0] BlackShark V3 Pro PS HID
+     vendor/product : 0x1532 / 0x101b
+     interface/coll : 5 / 1
+     usage page/usg : 0x000c / 0x0001
+     reports in/out/feat : 2 / 0 / 0
+     serial         : <present, redacted>
+     path           : path:sha256:df0596ce
+     candidate      : excluded - not a vendor-defined usage page
+
+[1] BlackShark V3 Pro PS HID
+     vendor/product : 0x1532 / 0x101b
+     interface/coll : 5 / 2
+     usage page/usg : 0xff13 / 0x0001
+     reports in/out/feat : 62 / 62 / 0
+     serial         : <present, redacted>
+     path           : path:sha256:9da4b97b
+     candidate      : score 172 (vendor-defined usage page 0xff13; declared report width 62 bytes; bidirectional: input report width 62 bytes)
+
+[2] BlackShark V3 Pro PS HID
+     vendor/product : 0x1532 / 0x101b
+     interface/coll : 5 / 3
+     usage page/usg : 0x000b / 0x0005
+     reports in/out/feat : 2 / 2 / 0
+     serial         : <present, redacted>
+     path           : path:sha256:f138832d
+     candidate      : excluded - reserved for Windows audio
+
+[3] BlackShark V3 Pro PS HID
+     vendor/product : 0x1532 / 0x101b
+     interface/coll : 5 / 4
+     usage page/usg : 0xff14 / 0x0001
+     reports in/out/feat : 64 / 64 / 0
+     serial         : <present, redacted>
+     path           : path:sha256:292600f7
+     candidate      : score 174 (vendor-defined usage page 0xff14; declared report width 64 bytes; bidirectional: input report width 64 bytes)
+
+Best control candidate: index 3

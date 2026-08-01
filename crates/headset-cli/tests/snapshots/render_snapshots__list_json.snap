@@ -1,0 +1,104 @@
+---
+source: crates/headset-cli/tests/render_snapshots.rs
+assertion_line: 29
+expression: out
+---
+{
+  "best_candidate_index": 3,
+  "collections": [
+    {
+      "collection_number": 1,
+      "disqualified": "not a vendor-defined usage page",
+      "feature_report_len": 0,
+      "index": 0,
+      "input_report_len": 2,
+      "interface_number": 5,
+      "manufacturer": "Razer Inc",
+      "output_report_len": 0,
+      "path": "path:sha256:df0596ce",
+      "product": "BlackShark V3 Pro PS HID",
+      "product_id": "0x101b",
+      "reasons": [
+        "usage page 0x000c is not vendor-defined"
+      ],
+      "score": 0,
+      "serial": "<present, redacted>",
+      "usage": "0x0001",
+      "usage_page": "0x000c",
+      "vendor_id": "0x1532",
+      "version": "0x0100"
+    },
+    {
+      "collection_number": 2,
+      "disqualified": null,
+      "feature_report_len": 0,
+      "index": 1,
+      "input_report_len": 62,
+      "interface_number": 5,
+      "manufacturer": "Razer Inc",
+      "output_report_len": 62,
+      "path": "path:sha256:9da4b97b",
+      "product": "BlackShark V3 Pro PS HID",
+      "product_id": "0x101b",
+      "reasons": [
+        "vendor-defined usage page 0xff13",
+        "declared report width 62 bytes",
+        "bidirectional: input report width 62 bytes"
+      ],
+      "score": 172,
+      "serial": "<present, redacted>",
+      "usage": "0x0001",
+      "usage_page": "0xff13",
+      "vendor_id": "0x1532",
+      "version": "0x0100"
+    },
+    {
+      "collection_number": 3,
+      "disqualified": "reserved for Windows audio",
+      "feature_report_len": 0,
+      "index": 2,
+      "input_report_len": 2,
+      "interface_number": 5,
+      "manufacturer": "Razer Inc",
+      "output_report_len": 2,
+      "path": "path:sha256:f138832d",
+      "product": "BlackShark V3 Pro PS HID",
+      "product_id": "0x101b",
+      "reasons": [
+        "telephony headset collection bound by the Windows audio stack"
+      ],
+      "score": 0,
+      "serial": "<present, redacted>",
+      "usage": "0x0005",
+      "usage_page": "0x000b",
+      "vendor_id": "0x1532",
+      "version": "0x0100"
+    },
+    {
+      "collection_number": 4,
+      "disqualified": null,
+      "feature_report_len": 0,
+      "index": 3,
+      "input_report_len": 64,
+      "interface_number": 5,
+      "manufacturer": "Razer Inc",
+      "output_report_len": 64,
+      "path": "path:sha256:292600f7",
+      "product": "BlackShark V3 Pro PS HID",
+      "product_id": "0x101b",
+      "reasons": [
+        "vendor-defined usage page 0xff14",
+        "declared report width 64 bytes",
+        "bidirectional: input report width 64 bytes"
+      ],
+      "score": 174,
+      "serial": "<present, redacted>",
+      "usage": "0x0001",
+      "usage_page": "0xff14",
+      "vendor_id": "0x1532",
+      "version": "0x0100"
+    }
+  ],
+  "include_sensitive": false,
+  "schema_version": 1
+}

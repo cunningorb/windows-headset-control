@@ -10,6 +10,10 @@ license.workspace = true
 name = "headsetctl"
 path = "src/main.rs"
 
+[lib]
+name = "headset_cli"
+path = "src/lib.rs"
+
 [dependencies]
 headset-device = { path = "../headset-device" }
 headset-protocol = { path = "../headset-protocol" }

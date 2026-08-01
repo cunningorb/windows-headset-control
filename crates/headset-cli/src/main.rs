@@ -1,8 +1,6 @@
-mod cli;
-mod redact;
-
 use anyhow::Result;
 use clap::Parser;
+use headset_cli::{cli, cmd, redact::Redactor};
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -14,11 +12,18 @@ fn main() -> Result<()> {
         .init();
 
     let args = cli::Cli::parse();
-    let _ = redact::Redactor::new(args.include_sensitive);
-    match args.command {
-        cli::Command::List(_) => println!("list: not implemented until Task 7"),
-        cli::Command::Inspect(_) => println!("inspect: not implemented until Task 7"),
-        cli::Command::Probe(_) => println!("probe: not implemented until Task 10"),
-    }
+    let r = Redactor::new(args.include_sensitive);
+
+    #[cfg(windows)]
+    let backend = headset_device::WindowsHidBackend::new();
+    #[cfg(not(windows))]
+    compile_error!("headsetctl targets Windows only");
+
+    let out = match &args.command {
+        cli::Command::List(a) => cmd::list::run(&backend, a, &r, args.json)?,
+        cli::Command::Inspect(a) => cmd::inspect::run(&backend, a, &r, args.json)?,
+        cli::Command::Probe(_) => "probe: not implemented until Task 10".to_string(),
+    };
+    print!("{out}");
     Ok(())
 }
