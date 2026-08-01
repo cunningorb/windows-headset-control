@@ -106,6 +106,9 @@ pub fn rank_candidates(all: &[CollectionInfo]) -> Vec<Candidate> {
 ///
 /// A tie is never broken automatically: two equally plausible vendor channels
 /// mean the evidence is insufficient, and guessing is worse than asking.
+///
+/// Expects `ranked` in the order `rank_candidates` produces: qualified first,
+/// then descending score. Only the top two qualified entries are compared.
 pub fn has_unambiguous_winner(ranked: &[Candidate]) -> bool {
     let qualified: Vec<&Candidate> = ranked.iter().filter(|c| c.disqualified.is_none()).collect();
     match qualified.as_slice() {
