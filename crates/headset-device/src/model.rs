@@ -20,7 +20,7 @@ impl DeviceId {
         parse_hex_token(&self.0, "&mi_")
     }
 
-    /// Parses `&col_NN` / `&colNN` out of the interface path, if present.
+    /// Parses `&col` followed by hex digits out of the interface path, if present.
     pub fn collection_number(&self) -> Option<u8> {
         parse_hex_token(&self.0, "&col")
     }
@@ -175,5 +175,59 @@ mod tests {
         let id = DeviceId::new("\\\\?\\hid#vid_046d&pid_c52b#6&xyz&0&0000");
         assert_eq!(id.interface_number(), None);
         assert_eq!(id.collection_number(), None);
+    }
+
+    #[test]
+    fn report_ids_deduplicates_and_sorts() {
+        let mut c = sample();
+        c.report_items = vec![
+            ReportItem {
+                kind: ReportKind::Input,
+                report_id: 5,
+                usage_page: 0xFF00,
+                usage_min: 0,
+                usage_max: 0,
+                bit_size: 8,
+                report_count: 1,
+                is_button: false,
+            },
+            ReportItem {
+                kind: ReportKind::Input,
+                report_id: 2,
+                usage_page: 0xFF00,
+                usage_min: 0,
+                usage_max: 0,
+                bit_size: 8,
+                report_count: 1,
+                is_button: false,
+            },
+            ReportItem {
+                kind: ReportKind::Input,
+                report_id: 5,
+                usage_page: 0xFF00,
+                usage_min: 0,
+                usage_max: 0,
+                bit_size: 8,
+                report_count: 1,
+                is_button: false,
+            },
+            ReportItem {
+                kind: ReportKind::Output,
+                report_id: 3,
+                usage_page: 0xFF00,
+                usage_min: 0,
+                usage_max: 0,
+                bit_size: 8,
+                report_count: 1,
+                is_button: false,
+            },
+        ];
+
+        // Input reports: 5, 2, 5 -> deduplicated and sorted -> [2, 5]
+        assert_eq!(c.report_ids(ReportKind::Input), vec![2, 5]);
+        // Output reports: only 3
+        assert_eq!(c.report_ids(ReportKind::Output), vec![3]);
+        // Feature reports: none
+        assert_eq!(c.report_ids(ReportKind::Feature), vec![]);
     }
 }
