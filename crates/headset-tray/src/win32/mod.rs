@@ -108,6 +108,10 @@ struct Ctx {
     /// Value being dragged. Shown instead of the device's value until release,
     /// which is what makes one write per adjustment rather than twenty.
     drag: Option<u8>,
+    /// Noise state asked for but not yet confirmed. Shown in place of the
+    /// device's own until the read-back arrives, exactly as `drag` is for the
+    /// slider.
+    pending_noise: Option<NoiseControl>,
     panel_visible: bool,
 }
 
@@ -319,6 +323,7 @@ pub fn run_ui_with<F: FnOnce(isize)>(
                 level_track: None,
                 scale: 1.0,
                 drag: None,
+                pending_noise: None,
                 panel_visible: false,
             })
         });
@@ -391,6 +396,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_STATE => {
             CTX.with(|c| {
                 if let Some(ctx) = c.borrow_mut().as_mut() {
+                    // The device has spoken; stop showing what was asked for.
+                    ctx.pending_noise = None;
                     refresh_tray(ctx);
                     if ctx.panel_visible {
                         redraw_panel(ctx);
@@ -482,6 +489,7 @@ fn redraw_panel(ctx: &mut Ctx) {
         return;
     };
     let state = ctx.state.lock().map(|s| s.clone()).unwrap_or_default();
+    let state = state.with_pending_noise(ctx.pending_noise);
     let panel = ui::build(&state, ctx.view, ctx.param, ctx.drag);
     ctx.scale = unsafe { dpi::window_scale(ctx.panel_hwnd) };
     let img = match renderer.render(&panel, ctx.scale) {
@@ -525,6 +533,7 @@ fn hide_panel(ctx: &mut Ctx) {
     unsafe { panel::hide(ctx.panel_hwnd) };
     ctx.panel_visible = false;
     ctx.drag = None;
+    ctx.pending_noise = None;
     // Always reopen on the main view; landing back in Settings is disorienting.
     ctx.view = View::Main;
 }
@@ -650,7 +659,12 @@ fn set_noise_mode(ctx: &mut Ctx, mode: NoiseMode) {
 fn send_noise(ctx: &mut Ctx, f: impl FnOnce(NoiseControl) -> NoiseControl) {
     let current = ctx.state.lock().ok().and_then(|s| s.noise);
     let Some(current) = current else { return };
-    let _ = ctx.commands.send(Command::SetNoise(f(current)));
+    let want = f(current);
+    let _ = ctx.commands.send(Command::SetNoise(want));
+    // Show it immediately. The worker's read-back replaces it with whatever
+    // the device actually holds, including when the device refuses.
+    ctx.pending_noise = Some(want);
+    redraw_panel(ctx);
 }
 
 fn on_panel_drag(ctx: &mut Ctx, x: f32) {
