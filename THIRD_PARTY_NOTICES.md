@@ -1,5 +1,17 @@
 # Third-Party Notices
 
+## Artwork
+
+`crates/headset-tray/assets/headset.svg` — "Hardware Headset", obtained from
+[SVG Repo](https://www.svgrepo.com/svg/370144/hardware-headset), **public domain**
+(verified by the maintainer on 2026-08-02). Committed unmodified; it is rasterised at build
+and run time by `headset-tray::ui::icon`.
+
+No attribution is required by that licence. It is recorded here because this project keeps
+a provenance trail for anything it did not write — see `docs/clean-room-notes.md`.
+
+## Rust crates
+
 This product bundles no third-party source code. It links Rust crates whose licenses
 are reproduced below. Regenerate when dependencies change:
 

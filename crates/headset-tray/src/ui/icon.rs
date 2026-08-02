@@ -1,87 +1,319 @@
 //! The headset icon, as pixels. Pure: no OS, no window, no device.
 //!
-//! One definition serves three consumers — the tray's runtime `HICON`, the
-//! multi-size `.ico` embedded in the executable, and the tests that keep those
-//! two from drifting apart.
+//! The artwork is `assets/headset.svg`, which is the committed source of truth.
+//! It is rasterised here rather than shipped as a bitmap so one file serves the
+//! tray's runtime `HICON`, the multi-size `.ico` embedded in the executable, and
+//! the tests that keep those from drifting apart.
+//!
+//! The rasteriser is written by hand — a path parser, cubic flattening, and a
+//! scanline fill — because the alternative is a dependency, and the file uses
+//! four path commands and one fill rule.
 
-/// Straight-alpha BGRA. Two opaque colours and full transparency: the shape is
-/// not anti-aliased, which is what lets the `.ico` stay exact.
+/// Straight-alpha BGRA.
 pub const FILL: u32 = 0xFF_F0F0F0;
 pub const OUTLINE: u32 = 0xFF_1A1A1A;
 pub const CLEAR: u32 = 0x00_000000;
 
-// The 32-pixel drawing these came from, divided by 32. At n = 32 they reproduce
-// it exactly; at any other size they scale it.
-const RING_CX: f32 = 0.5;
-const RING_CY: f32 = 0.593_75;
-const RING_INNER: f32 = 0.328_125;
-const RING_OUTER: f32 = 0.421_875;
-const CUP_TOP: f32 = 0.468_75;
-const CUP_BOTTOM: f32 = 0.843_75;
-const CUP_LEFT_X0: f32 = 0.093_75;
-const CUP_LEFT_X1: f32 = 0.281_25;
-// The right cup is not given its own constants. It is mirrored from the left,
-// because rounding two exactly-mirrored fractions independently does not
-// produce mirrored integers — at n = 16 it put the cups at 2..5 and 12..15,
-// which is off by one and visibly lopsided.
+/// The artwork. Public domain (see `THIRD_PARTY_NOTICES.md`).
+const SVG: &str = include_str!("../../assets/headset.svg");
 
-pub fn icon_pixels(n: usize) -> Vec<u32> {
-    let nf = n as f32;
-    let bound = |f: f32| (f * nf).round() as i32;
-    let (cup_top, cup_bottom) = (bound(CUP_TOP), bound(CUP_BOTTOM));
-    let (l0, l1) = (bound(CUP_LEFT_X0), bound(CUP_LEFT_X1));
-    // Mirrored from the left cup rather than rounded from CUP_RIGHT_X0/X1
-    // independently. The fractions are exact mirrors, but rounding them
-    // separately is not: at n = 16 that put the left cup at 2..5 and the right
-    // at 12..15, which is off by one and visibly lopsided.
-    let (r0, r1) = (n as i32 - l1, n as i32 - l0);
+/// Samples per axis. Coverage is averaged over `SS * SS` samples per pixel,
+/// which is what makes the diagonals smooth instead of stair-stepped.
+const SS: usize = 4;
 
-    let mut shape = vec![false; n * n];
-    for y in 0..n as i32 {
-        for x in 0..n as i32 {
-            // Headband: an arc centred low, so only its upper half is drawn.
-            let dx = (x as f32 + 0.5) / nf - RING_CX;
-            let dy = (y as f32 + 0.5) / nf - RING_CY;
-            let r = (dx * dx + dy * dy).sqrt();
-            let band = (RING_INNER..=RING_OUTER).contains(&r) && dy < 0.0;
+/// Extracts the `d` attribute of the first `<path>`.
+///
+/// Deliberately anchored to `<path`: matching `d="` alone also matches the tail
+/// of `enable-background="`, which is a real mistake this file has already made
+/// once.
+fn path_data(svg: &str) -> &str {
+    let tag = &svg[svg.find("<path").expect("the artwork has a path")..];
+    let attr = &tag[tag.find(" d=\"").expect("the path has a d attribute") + 4..];
+    &attr[..attr.find('"').expect("the d attribute is terminated")]
+}
 
-            // Ear cups, with their four outer corners notched off so the ends
-            // read as rounded rather than square.
-            let in_left = (l0..l1).contains(&x);
-            let in_right = (r0..r1).contains(&x);
-            let in_rows = (cup_top..cup_bottom).contains(&y);
-            let end_row = y == cup_top || y == cup_bottom - 1;
-            let end_col = x == l0 || x == l1 - 1 || x == r0 || x == r1 - 1;
-            let cup = (in_left || in_right) && in_rows && !(end_row && end_col);
+/// The `viewBox` side. Square, and asserted so a replacement artwork with a
+/// different box fails loudly rather than rendering off-centre.
+fn view_box(svg: &str) -> f32 {
+    let a = &svg[svg.find("viewBox=\"").expect("the artwork has a viewBox") + 9..];
+    let v = &a[..a.find('"').expect("the viewBox is terminated")];
+    let nums: Vec<f32> = v
+        .split_whitespace()
+        .filter_map(|n| n.parse().ok())
+        .collect();
+    assert_eq!(nums.len(), 4, "viewBox should have four numbers: {v}");
+    assert_eq!(
+        nums[2], nums[3],
+        "the artwork is expected to be square: {v}"
+    );
+    nums[2]
+}
 
-            if band || cup {
-                shape[y as usize * n + x as usize] = true;
+/// Flattens the path into closed polygons, in viewBox coordinates.
+///
+/// Handles `M`, `L`, `C` and `Z`, absolute only, which is what the artwork uses.
+/// An unexpected command panics rather than being skipped: silently dropping a
+/// curve would produce a subtly wrong icon instead of an obvious failure.
+fn polygons(d: &str) -> Vec<Vec<(f32, f32)>> {
+    let mut nums = Vec::new();
+    let mut cmds = Vec::new();
+    let mut cur = String::new();
+    for ch in d.chars() {
+        if ch.is_ascii_alphabetic() {
+            if !cur.is_empty() {
+                nums.push(cur.parse::<f32>().expect("a number"));
+                cur.clear();
+            }
+            cmds.push((ch, nums.len()));
+        } else if ch == ',' || ch.is_whitespace() {
+            if !cur.is_empty() {
+                nums.push(cur.parse::<f32>().expect("a number"));
+                cur.clear();
+            }
+        } else if ch == '-' && !cur.is_empty() && !cur.ends_with(['e', 'E']) {
+            nums.push(cur.parse::<f32>().expect("a number"));
+            cur.clear();
+            cur.push(ch);
+        } else {
+            cur.push(ch);
+        }
+    }
+    if !cur.is_empty() {
+        nums.push(cur.parse::<f32>().expect("a number"));
+    }
+
+    let mut out: Vec<Vec<(f32, f32)>> = Vec::new();
+    let mut poly: Vec<(f32, f32)> = Vec::new();
+    let mut at = (0.0f32, 0.0f32);
+
+    for (i, (cmd, start)) in cmds.iter().enumerate() {
+        let end = cmds.get(i + 1).map(|(_, s)| *s).unwrap_or(nums.len());
+        let args = &nums[*start..end];
+        match cmd {
+            'M' => {
+                if poly.len() > 2 {
+                    out.push(std::mem::take(&mut poly));
+                }
+                poly.clear();
+                at = (args[0], args[1]);
+                poly.push(at);
+                // Any further pairs after a moveto are implicit linetos.
+                for p in args[2..].chunks_exact(2) {
+                    at = (p[0], p[1]);
+                    poly.push(at);
+                }
+            }
+            'L' => {
+                for p in args.chunks_exact(2) {
+                    at = (p[0], p[1]);
+                    poly.push(at);
+                }
+            }
+            'C' => {
+                for c in args.chunks_exact(6) {
+                    let (p0, p1, p2, p3) = (at, (c[0], c[1]), (c[2], c[3]), (c[4], c[5]));
+                    // Fixed subdivision. The artwork's curves are short relative
+                    // to the canvas, and 16 segments is well under a pixel at
+                    // the largest size rendered.
+                    const STEPS: usize = 16;
+                    for s in 1..=STEPS {
+                        let t = s as f32 / STEPS as f32;
+                        let u = 1.0 - t;
+                        let x = u * u * u * p0.0
+                            + 3.0 * u * u * t * p1.0
+                            + 3.0 * u * t * t * p2.0
+                            + t * t * t * p3.0;
+                        let y = u * u * u * p0.1
+                            + 3.0 * u * u * t * p1.1
+                            + 3.0 * u * t * t * p2.1
+                            + t * t * t * p3.1;
+                        poly.push((x, y));
+                    }
+                    at = p3;
+                }
+            }
+            'Z' | 'z' => {
+                if poly.len() > 2 {
+                    out.push(std::mem::take(&mut poly));
+                }
+                poly.clear();
+            }
+            other => panic!("the artwork uses path command {other}, which is not supported"),
+        }
+    }
+    if poly.len() > 2 {
+        out.push(poly);
+    }
+    out
+}
+
+/// Scales and centres the drawing so it fills `box_side`, less a margin.
+///
+/// The margin is not decoration: the halo is dilated outward by a pixel, so a
+/// glyph flush with the edge would have its halo clipped.
+fn fit_to_canvas(polys: &mut [Vec<(f32, f32)>], box_side: f32) {
+    const MARGIN: f32 = 0.04;
+
+    let pts = || polys.iter().flat_map(|p| p.iter());
+    let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for (x, y) in pts() {
+        x0 = x0.min(*x);
+        y0 = y0.min(*y);
+        x1 = x1.max(*x);
+        y1 = y1.max(*y);
+    }
+    let (w, h) = (x1 - x0, y1 - y0);
+    if w <= 0.0 || h <= 0.0 {
+        return;
+    }
+    // One scale for both axes: the drawing must not be stretched.
+    let usable = box_side * (1.0 - 2.0 * MARGIN);
+    let s = (usable / w).min(usable / h);
+    let (ox, oy) = (
+        (box_side - w * s) / 2.0 - x0 * s,
+        (box_side - h * s) / 2.0 - y0 * s,
+    );
+    for poly in polys.iter_mut() {
+        for p in poly.iter_mut() {
+            *p = (p.0 * s + ox, p.1 * s + oy);
+        }
+    }
+}
+
+/// Fills the polygons into a boolean mask of `size * size`, nonzero winding.
+fn fill_mask(polys: &[Vec<(f32, f32)>], size: usize, scale: f32) -> Vec<bool> {
+    let mut mask = vec![false; size * size];
+    let mut xs: Vec<(f32, i32)> = Vec::new();
+
+    for row in 0..size {
+        let y = (row as f32 + 0.5) / scale;
+        xs.clear();
+        for poly in polys {
+            for i in 0..poly.len() {
+                let (x0, y0) = poly[i];
+                let (x1, y1) = poly[(i + 1) % poly.len()];
+                if (y0 <= y) == (y1 <= y) {
+                    continue; // no crossing
+                }
+                let t = (y - y0) / (y1 - y0);
+                xs.push((x0 + t * (x1 - x0), if y1 > y0 { 1 } else { -1 }));
+            }
+        }
+        if xs.is_empty() {
+            continue;
+        }
+        xs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mut winding = 0;
+        for w in xs.windows(2) {
+            winding += w[0].1;
+            if winding == 0 {
+                continue;
+            }
+            let (a, b) = (w[0].0 * scale, w[1].0 * scale);
+            let (lo, hi) = (
+                a.ceil().max(0.0) as usize,
+                b.ceil().min(size as f32) as usize,
+            );
+            for col in lo..hi {
+                mask[row * size + col] = true;
             }
         }
     }
+    mask
+}
 
-    // Outline every clear pixel that touches the shape, so the glyph reads on a
-    // light taskbar as well as a dark one.
-    let mut px = vec![CLEAR; n * n];
-    for y in 0..n as i32 {
-        for x in 0..n as i32 {
-            let i = y as usize * n + x as usize;
-            if shape[i] {
-                px[i] = FILL;
-                continue;
-            }
-            let touches = (-1..=1).any(|dy| {
-                (-1..=1).any(|dx| {
-                    let (nx, ny) = (x + dx, y + dy);
-                    (0..n as i32).contains(&nx)
-                        && (0..n as i32).contains(&ny)
-                        && shape[ny as usize * n + nx as usize]
-                })
-            });
-            if touches {
-                px[i] = OUTLINE;
+/// Grows a mask by `r` samples in each direction, separably.
+///
+/// Used for the dark halo behind the light glyph, which is what lets the icon
+/// read on a light taskbar as well as a dark one.
+fn dilate(mask: &[bool], size: usize, r: usize) -> Vec<bool> {
+    let mut h = vec![false; size * size];
+    for y in 0..size {
+        for x in 0..size {
+            if mask[y * size + x] {
+                let lo = x.saturating_sub(r);
+                let hi = (x + r + 1).min(size);
+                for nx in lo..hi {
+                    h[y * size + nx] = true;
+                }
             }
         }
+    }
+    let mut v = vec![false; size * size];
+    for y in 0..size {
+        for x in 0..size {
+            if h[y * size + x] {
+                let lo = y.saturating_sub(r);
+                let hi = (y + r + 1).min(size);
+                for ny in lo..hi {
+                    v[ny * size + x] = true;
+                }
+            }
+        }
+    }
+    v
+}
+
+/// Box-averages an `n * SS` mask down to `n`, giving per-pixel coverage.
+fn downsample(mask: &[bool], n: usize) -> Vec<f32> {
+    let big = n * SS;
+    let mut out = vec![0.0; n * n];
+    for y in 0..n {
+        for x in 0..n {
+            let mut hit = 0;
+            for sy in 0..SS {
+                for sx in 0..SS {
+                    if mask[(y * SS + sy) * big + (x * SS + sx)] {
+                        hit += 1;
+                    }
+                }
+            }
+            out[y * n + x] = hit as f32 / (SS * SS) as f32;
+        }
+    }
+    out
+}
+
+fn channel(c: u32, shift: u32) -> f32 {
+    ((c >> shift) & 0xFF) as f32
+}
+
+/// The icon as straight-alpha BGRA, `n` x `n`, row-major top-down.
+pub fn icon_pixels(n: usize) -> Vec<u32> {
+    let mut polys = polygons(path_data(SVG));
+    // Fit the artwork to the canvas rather than honouring the viewBox. This
+    // drawing sits in the middle ~60% of its box, and rendering it as authored
+    // wastes half the pixels of a 16 px tray icon on empty margin.
+    fit_to_canvas(&mut polys, view_box(SVG));
+    let big = n * SS;
+    let scale = big as f32 / view_box(SVG);
+
+    let glyph = fill_mask(&polys, big, scale);
+    // One target pixel of halo at every size, which is what keeps the shape
+    // legible against a taskbar of either colour.
+    let halo = dilate(&glyph, big, SS);
+
+    let fill_cov = downsample(&glyph, n);
+    let halo_cov = downsample(&halo, n);
+
+    let mut px = vec![CLEAR; n * n];
+    for i in 0..n * n {
+        let (af, ao) = (fill_cov[i], halo_cov[i]);
+        if af <= 0.0 && ao <= 0.0 {
+            continue;
+        }
+        // Source-over: the light glyph on top of the dark halo.
+        let alpha = af + ao * (1.0 - af);
+        if alpha <= 0.0 {
+            continue;
+        }
+        let mix = |shift: u32| {
+            let c = (channel(FILL, shift) * af + channel(OUTLINE, shift) * ao * (1.0 - af)) / alpha;
+            (c.round().clamp(0.0, 255.0) as u32) << shift
+        };
+        px[i] =
+            ((alpha * 255.0).round().clamp(0.0, 255.0) as u32) << 24 | mix(16) | mix(8) | mix(0);
     }
     px
 }
@@ -158,8 +390,96 @@ pub fn encode_ico(sizes: &[usize]) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    fn at(px: &[u32], n: usize, x: usize, y: usize) -> u32 {
-        px[y * n + x]
+    fn alpha(p: u32) -> u8 {
+        (p >> 24) as u8
+    }
+
+    #[test]
+    fn the_artwork_parses_into_three_closed_subpaths() {
+        // A headband and two ear pieces. A parser that dropped a curve would
+        // still produce polygons, so the count is worth pinning.
+        let polys = polygons(path_data(SVG));
+        assert_eq!(polys.len(), 3, "expected three subpaths");
+        for (i, p) in polys.iter().enumerate() {
+            assert!(
+                p.len() > 8,
+                "subpath {i} flattened to only {} points",
+                p.len()
+            );
+        }
+    }
+
+    #[test]
+    fn the_icon_is_neither_empty_nor_solid_at_every_size() {
+        for n in [16, 32, 48, 128, 256] {
+            let px = icon_pixels(n);
+            assert_eq!(px.len(), n * n, "size {n} produced the wrong pixel count");
+            // Counted on substantially-opaque pixels. Any-alpha counts the
+            // anti-aliased fringe and the halo too, which at 16 px inflates an
+            // ordinary glyph to 80% of the canvas and says nothing about
+            // whether the shape is legible.
+            let drawn = px.iter().filter(|p| alpha(**p) > 0x80).count();
+            assert!(
+                drawn > n * n / 50,
+                "size {n} drew almost nothing: {drawn}px"
+            );
+            assert!(
+                drawn < n * n * 3 / 4,
+                "size {n} drew almost everything: {drawn}px"
+            );
+        }
+    }
+
+    #[test]
+    fn the_left_side_carries_the_boom_microphone() {
+        // The artwork is deliberately asymmetric: the left subpath is far longer
+        // than the right because it draws a boom mic. That is the feature that
+        // makes this a headset rather than headphones, and dropping it while
+        // "simplifying" the path parser would be easy and quiet.
+        for n in [48, 128] {
+            let px = icon_pixels(n);
+            // The ear cups bottom out around 88% of the height; only the boom
+            // reaches below that, sweeping down from the left cup toward the
+            // centre. Two earlier versions of this test guessed its position
+            // wrongly, so it asserts the one thing that is structural: there is
+            // ink below the cups at all.
+            let below = ((n * 9 / 10)..n)
+                .flat_map(|y| (0..n).map(move |x| (x, y)))
+                .filter(|(x, y)| alpha(px[y * n + x]) > 0x40)
+                .count();
+            assert!(
+                below > n / 8,
+                "size {n}: expected the boom below the ear cups, found {below} pixels"
+            );
+        }
+    }
+
+    #[test]
+    fn the_edges_are_anti_aliased() {
+        // The whole reason for supersampling. Without it every pixel is fully
+        // opaque or fully clear and the diagonals stair-step.
+        let px = icon_pixels(48);
+        let partial = px.iter().filter(|p| (1..255).contains(&alpha(**p))).count();
+        assert!(partial > 100, "only {partial} partially transparent pixels");
+    }
+
+    #[test]
+    fn the_glyph_sits_on_a_darker_halo() {
+        // What lets the icon read on a light taskbar as well as a dark one.
+        let px = icon_pixels(48);
+        let light = px
+            .iter()
+            .filter(|p| (**p & 0xFF) > 0xC0 && alpha(**p) > 0x80)
+            .count();
+        let dark = px
+            .iter()
+            .filter(|p| (**p & 0xFF) < 0x60 && alpha(**p) > 0x80)
+            .count();
+        assert!(
+            light > 50,
+            "expected a light glyph, found {light} light pixels"
+        );
+        assert!(dark > 50, "expected a dark halo, found {dark} dark pixels");
     }
 
     fn u16_at(b: &[u8], o: usize) -> u16 {
@@ -215,83 +535,25 @@ mod tests {
     #[test]
     fn the_committed_icon_matches_what_the_code_generates() {
         // The one that actually catches a forgotten regeneration.
-        let committed = include_bytes!("../../assets/headset.ico");
-        assert_eq!(
-            committed.as_slice(),
-            encode_ico(&ICON_SIZES).as_slice(),
-            "assets/headset.ico is stale; regenerate it with \
-             `cargo run -p headset-tray -- --export-icon crates/headset-tray/assets/headset.ico`"
+        let committed: &[u8] = include_bytes!("../../assets/headset.ico");
+        let fresh = encode_ico(&ICON_SIZES);
+        // Compared by length and first difference rather than with assert_eq on
+        // the vectors: a mismatch on 350 KB of pixels prints 350 KB of pixels,
+        // which buries the one line telling you what to do about it.
+        let first_diff = committed
+            .iter()
+            .zip(fresh.iter())
+            .position(|(a, b)| a != b)
+            .map(|i| i.to_string())
+            .unwrap_or_else(|| "none".into());
+        assert!(
+            committed == fresh.as_slice(),
+            "assets/headset.ico is stale ({} bytes committed, {} generated, first difference at {}); \
+             regenerate it with \
+             `cargo run -p headset-tray -- --export-icon crates/headset-tray/assets/headset.ico`",
+            committed.len(),
+            fresh.len(),
+            first_diff
         );
     }
-
-    #[test]
-    fn every_pixel_is_fill_outline_or_clear() {
-        // The ICO encoder relies on there being no partial alpha.
-        for n in [16, 32, 48, 128] {
-            for p in icon_pixels(n) {
-                assert!(
-                    p == FILL || p == OUTLINE || p == CLEAR,
-                    "size {n} produced an unexpected colour {p:#010x}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn the_shape_is_symmetric_about_the_vertical_axis() {
-        // Two ear cups and a centred arc: a left/right asymmetry means a
-        // constant was scaled wrongly.
-        for n in [16, 32, 48, 128] {
-            let px = icon_pixels(n);
-            for y in 0..n {
-                for x in 0..n {
-                    assert_eq!(
-                        at(&px, n, x, y),
-                        at(&px, n, n - 1 - x, y),
-                        "size {n} differs at ({x},{y}) and its mirror"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn the_icon_is_neither_empty_nor_solid_at_every_size() {
-        for n in [16, 32, 48, 128, 256] {
-            let px = icon_pixels(n);
-            assert_eq!(px.len(), n * n, "size {n} produced the wrong pixel count");
-            // Measured on FILL, not on everything non-clear. The outline is one
-            // pixel wide at every size, so at 16 it is proportionally huge and
-            // more than half the canvas is non-clear while the shape itself is
-            // still a thin headset.
-            let fill = px.iter().filter(|p| **p == FILL).count();
-            assert!(fill > n * n / 50, "size {n} drew almost nothing: {fill}px");
-            assert!(
-                fill < n * n / 2,
-                "size {n} drew almost everything: {fill}px"
-            );
-        }
-    }
-
-    #[test]
-    fn the_thirty_two_pixel_rendering_is_pinned() {
-        // This is the icon that has been shipping. Changing the drawing must
-        // fail here, and the fix is to re-run `--export-icon` and commit the
-        // regenerated file along with an updated expectation.
-        let px = icon_pixels(32);
-        let drawn = px.iter().filter(|p| **p != CLEAR).count();
-        let fill = px.iter().filter(|p| **p == FILL).count();
-        assert_eq!((drawn, fill), (PINNED_DRAWN, PINNED_FILL));
-
-        // The ear cups sit at the sides, the arc across the top, and the middle
-        // of the band area is hollow.
-        assert_eq!(at(&px, 32, 5, 20), FILL, "left ear cup");
-        assert_eq!(at(&px, 32, 26, 20), FILL, "right ear cup");
-        assert_eq!(at(&px, 32, 16, 7), FILL, "top of the headband arc");
-        assert_eq!(at(&px, 32, 16, 20), CLEAR, "the middle is open");
-    }
-
-    /// Filled in from the first run. See the test above.
-    const PINNED_DRAWN: usize = 370;
-    const PINNED_FILL: usize = 228;
 }
