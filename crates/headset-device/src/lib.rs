@@ -5,6 +5,7 @@ pub mod error;
 pub mod fake;
 pub mod model;
 pub mod select;
+pub mod session;
 
 #[cfg(windows)]
 pub mod windows;
@@ -16,6 +17,9 @@ pub use model::{CollectionInfo, DeviceId, OpenMode, ReportItem, ReportKind};
 pub use select::{
     has_unambiguous_winner, is_supported_device, rank_candidates, stable_sort_collections,
     Candidate, SUPPORTED_PRODUCT_IDS, SUPPORTED_VENDOR_ID,
+};
+pub use session::{
+    resolve_control_device, ControlSession, DEFAULT_EXCHANGE_TIMEOUT, MIN_REQUEST_INTERVAL,
 };
 
 #[cfg(windows)]

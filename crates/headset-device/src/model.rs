@@ -109,13 +109,31 @@ impl CollectionInfo {
     }
 }
 
-/// How a collection should be opened. `Descriptors` maps to
-/// `CreateFileW(dwDesiredAccess = 0)`, which cannot perform I/O and therefore
-/// cannot contend with the audio stack.
+/// How a collection should be opened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpenMode {
+    /// `CreateFileW(dwDesiredAccess = 0)`. Cannot perform I/O and therefore
+    /// cannot contend with the audio stack.
     Descriptors,
+    /// `FILE_GENERIC_READ` only. Can receive input reports; cannot write.
+    /// This is what `probe` uses, so its read-only contract is enforced by the
+    /// access rights Windows granted, not merely by the absence of a call.
+    Read,
+    /// `FILE_GENERIC_READ | FILE_GENERIC_WRITE`. Granted only to the control
+    /// session, and only after the descriptor-shape gate has passed.
+    ///
+    /// Phase 1 named this variant for the access it would eventually grant
+    /// while requesting read only. The write phase makes the name true; callers
+    /// that want the old behaviour want `Read`.
     ReadWrite,
+}
+
+impl OpenMode {
+    /// Whether this mode performs I/O at all. Used to decide when opening the
+    /// audio-stack collection must be refused.
+    pub fn performs_io(self) -> bool {
+        matches!(self, OpenMode::Read | OpenMode::ReadWrite)
+    }
 }
 
 #[cfg(test)]

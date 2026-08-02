@@ -213,7 +213,11 @@ fn origin_for(param: u8) -> u8 {
     }
 }
 
-fn encode(param_byte: u8, origin: u8, payload: &[u8]) -> Result<[u8; CONTROL_REPORT_LEN], ProtocolError> {
+fn encode(
+    param_byte: u8,
+    origin: u8,
+    payload: &[u8],
+) -> Result<[u8; CONTROL_REPORT_LEN], ProtocolError> {
     if payload.len() > MAX_PAYLOAD {
         return Err(ProtocolError::PayloadTooLong {
             max: MAX_PAYLOAD,
@@ -241,7 +245,10 @@ fn encode(param_byte: u8, origin: u8, payload: &[u8]) -> Result<[u8; CONTROL_REP
 ///
 /// `index` is supplied only for the parameters observed to take one; passing it
 /// for any other parameter is an error rather than being silently dropped.
-pub fn encode_read(param: u8, index: Option<u8>) -> Result<[u8; CONTROL_REPORT_LEN], ProtocolError> {
+pub fn encode_read(
+    param: u8,
+    index: Option<u8>,
+) -> Result<[u8; CONTROL_REPORT_LEN], ProtocolError> {
     if !READ_ALLOWLIST.contains(&param) {
         return Err(ProtocolError::NotAllowlisted {
             param,
@@ -348,7 +355,9 @@ pub fn parse(raw: &[u8]) -> Result<Option<ParamFrame>, ProtocolError> {
         });
     }
     let Some(role) = Role::from_byte(raw[OFF_ROLE]) else {
-        return Err(ProtocolError::UnknownRole { role: raw[OFF_ROLE] });
+        return Err(ProtocolError::UnknownRole {
+            role: raw[OFF_ROLE],
+        });
     };
 
     Ok(Some(ParamFrame {
@@ -538,7 +547,10 @@ mod tests {
         let mut b = captured_battery_response();
         b[11] = 0x07;
         b[62] = checksum(&b);
-        assert!(matches!(parse(&b), Err(ProtocolError::UnknownRole { role: 7 })));
+        assert!(matches!(
+            parse(&b),
+            Err(ProtocolError::UnknownRole { role: 7 })
+        ));
     }
 
     #[test]

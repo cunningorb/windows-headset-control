@@ -143,7 +143,7 @@ captured traffic. Rows still lacking evidence remain `unverified` and are not fi
 | `data_size` at byte 6 equals `4 + payload length` | n/a | 4 + payload | n/a | **confirmed** | Holds across payload lengths 0, 1, 2, 6, 10, and 11 |
 | Bytes 9-10 carry the command; bit 7 of byte 10 selects write vs read | bytes 9-10 = command, byte 11 = role, byte 12 = length | varies | as above | **confirmed** | Read/write pairs observed for three parameters: `0x19`/`0x99`, `0x5C`/`0xDC`, `0x6A`/`0xEA` |
 | Byte 11 is a role selector (`00` request, `01` response, `02` event) | byte 11 = role | n/a | n/a | **confirmed** | All three values observed with consistent semantics across every capture |
-| A write's response payload is a result code | n/a | 1 byte | n/a | **confirmed** for `0x00`; **partial** for `0xFF` | `0x00` on every successful write; `0xFF` returned by `0x98`/`0x99` writes while the mic was hardware-muted, `0x00` for the identical writes once unmuted |
+| A response payload of `0xFF` means refused/unavailable, for reads as well as writes | n/a | 1 byte | n/a | **confirmed** | `0x00` on every successful write; `0xFF` from `0x98`/`0x99` writes while the mic was hardware-muted, `0x00` for the identical writes once unmuted; and separately, with the headset powered off, `headsetctl` read `0xFF` from every headset-proxied parameter in one session while `0x20` reported `00 00` |
 | Frames with non-zero class/command-id bytes belong to a different family | bytes 7-8 non-zero | varies | as above | **unverified** | Two exchanges observed (`command_id` `0x84` and `0x04`); not decoded, treated as opaque |
 | `COL02` (`0xFF13`) carries a usable secondary or legacy control channel | unknown | unknown | unknown | **unverified** | descriptor shape only; no request/response exchanged |
 
@@ -171,6 +171,36 @@ Reads observed whose meaning is **unknown**, and which are deliberately unnamed:
 `0x2C`, `0x5D`, `0x5F`, `0x60` (indexed 0–8, 6 bytes), `0x65` (indexed, 2 bytes),
 `0x66`. The indexed shape of `0x15`/`0x60` is consistent with a nine-entry table, but
 no interpretation of their payload bytes is recorded, and none may be assumed.
+
+### Reads while the headset is off (2026-08-02, first-party)
+
+The first end-to-end run of `headsetctl` against the hardware happened to catch the
+headset powered off, which produced evidence no capture had:
+
+```
+link            : 00 00      (not connected)
+battery         : ff
+sidetone        : ff
+game/chat       : ff
+mic mute        : ff
+slider function : ff
+0x2c            : ff
+```
+
+Every headset-proxied parameter answered with the same refusal byte the vendor
+protocol uses for a rejected write, while `0x20` — the dongle-local link parameter —
+answered normally. This is what distinguishes the two address spaces in practice: the
+dongle answers for itself and refuses on the headset's behalf when it cannot reach it.
+
+Two consequences for any caller:
+
+- `0xFF` from a named parameter must not be surfaced as a value. 255 is not a battery
+  percentage, a sidetone level, or a mute state.
+- The refusal is **not** specific to the muted-mic case recorded above. Treat `0xFF` as
+  "refused", and consult `0x20` to find out whether an unreachable headset is why.
+
+The raw `param get` path deliberately does **not** apply this interpretation: an
+unidentified parameter could legitimately hold `0xFF`, and this project does not guess.
 
 ### What is out of scope of this protocol
 

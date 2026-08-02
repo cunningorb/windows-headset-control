@@ -27,7 +27,9 @@ pub enum ProtocolError {
     #[error("implausible data_size {data_size}")]
     ImplausibleDataSize { data_size: usize },
 
-    #[error("payload length disagreement: byte 12 declares {declared}, data_size implies {implied}")]
+    #[error(
+        "payload length disagreement: byte 12 declares {declared}, data_size implies {implied}"
+    )]
     LengthDisagreement { declared: u8, implied: usize },
 
     #[error("unknown role byte {role:#04x}")]

@@ -6,13 +6,18 @@ use super::ffi;
 use crate::backend::HidTransport;
 use crate::error::DeviceError;
 
-/// A read-only handle to one HID collection.
+/// A handle to one HID collection.
 ///
-/// There is deliberately no write method. Adding one is a reviewed change that
-/// belongs to the write phase, not to Phase 1.
+/// Whether it can write is decided at construction by the access rights the
+/// handle was opened with, not by the caller: `write_report` refuses unless the
+/// handle came from `open_for_read_write`. A read-only handle that reached a
+/// caller expecting to write fails loudly instead of issuing a write Windows
+/// would reject with a less obvious error.
 pub struct WindowsTransport {
     handle: HANDLE,
     input_report_len: u16,
+    output_report_len: u16,
+    writable: bool,
 }
 
 impl WindowsTransport {
@@ -20,6 +25,21 @@ impl WindowsTransport {
         Self {
             handle,
             input_report_len,
+            output_report_len: 0,
+            writable: false,
+        }
+    }
+
+    pub(super) fn new_writable(
+        handle: HANDLE,
+        input_report_len: u16,
+        output_report_len: u16,
+    ) -> Self {
+        Self {
+            handle,
+            input_report_len,
+            output_report_len,
+            writable: true,
         }
     }
 }
@@ -41,6 +61,27 @@ impl HidTransport for WindowsTransport {
 
     fn input_report_len(&self) -> u16 {
         self.input_report_len
+    }
+
+    fn write_report(&self, buf: &[u8]) -> Result<(), DeviceError> {
+        if !self.writable {
+            return Err(DeviceError::WriteNotSupported);
+        }
+        // Windows requires the buffer to be exactly the declared output report
+        // length; a short buffer is rejected by the HID stack with an error that
+        // does not name the real cause.
+        if buf.len() != self.output_report_len as usize {
+            return Err(DeviceError::UnexpectedDescriptor(format!(
+                "write buffer is {} bytes; the collection declares an output report of {}",
+                buf.len(),
+                self.output_report_len
+            )));
+        }
+        ffi::write_output_report(self.handle, buf)
+    }
+
+    fn output_report_len(&self) -> u16 {
+        self.output_report_len
     }
 }
 
