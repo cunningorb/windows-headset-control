@@ -38,11 +38,11 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
-    DestroyMenu, DispatchMessageW, GetCursorPos, GetMessageW, PostMessageW, PostQuitMessage,
-    RegisterClassW, SetForegroundWindow, TrackPopupMenu, TranslateMessage, HICON, ICONINFO,
-    MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN, TPM_RIGHTALIGN, WINDOW_EX_STYLE, WM_ACTIVATE,
-    WM_APP, WM_COMMAND, WM_DESTROY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONUP,
-    WNDCLASSW, WS_OVERLAPPED,
+    DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW, LoadCursorW,
+    PostMessageW, PostQuitMessage, RegisterClassW, SetForegroundWindow, TrackPopupMenu,
+    TranslateMessage, HICON, ICONINFO, IDC_ARROW, MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN,
+    TPM_RIGHTALIGN, WINDOW_EX_STYLE, WM_ACTIVATE, WM_APP, WM_CLOSE, WM_COMMAND, WM_DESTROY,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPED,
 };
 
 // Not part of any public API: these are the tray's own window plumbing, and
@@ -135,10 +135,17 @@ pub fn run_ui_with<F: FnOnce(isize)>(
 
         let instance = GetModuleHandleW(None)?;
         let class = w!("HeadsetTrayWindow");
+        // A class with a null hCursor never sets the pointer shape, so the
+        // cursor keeps whatever it was when it entered -- which is the
+        // app-starting hourglass for a freshly launched process. That is the
+        // "loading cursor that never goes away" over the panel.
+        let arrow = LoadCursorW(None, IDC_ARROW)?;
+
         let wc = WNDCLASSW {
             lpfnWndProc: Some(wndproc),
             hInstance: instance.into(),
             lpszClassName: class,
+            hCursor: arrow,
             ..Default::default()
         };
         if RegisterClassW(&wc) == 0 {
@@ -148,6 +155,7 @@ pub fn run_ui_with<F: FnOnce(isize)>(
             lpfnWndProc: Some(wndproc),
             hInstance: instance.into(),
             lpszClassName: panel::CLASS_NAME,
+            hCursor: arrow,
             ..Default::default()
         };
         if RegisterClassW(&panel_class) == 0 {
@@ -296,12 +304,21 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             with_ctx(|ctx| on_command(id, ctx));
             LRESULT(0)
         }
-        WM_DESTROY => {
+        // Only the owner window's destruction ends the application. Both windows
+        // share this procedure, and tearing down on the panel's WM_DESTROY would
+        // take the context away while leaving the panel on screen — a live
+        // process with an orphaned window that ignores every click.
+        WM_DESTROY if panel::tag(hwnd) != panel::TAG_PANEL => {
             CTX.with(|c| {
                 if let Some(ctx) = c.borrow_mut().take() {
                     let _ = Shell_NotifyIconW(NIM_DELETE, &ctx.nid);
                     let _ = DestroyIcon(ctx.icon);
                     let _ = ctx.commands.send(Command::Shutdown);
+                    // Take the panel with us; otherwise its pixels outlive the
+                    // message loop and look like a frozen window.
+                    if !ctx.panel_hwnd.is_invalid() {
+                        let _ = DestroyWindow(ctx.panel_hwnd);
+                    }
                 }
             });
             PostQuitMessage(0);
@@ -468,7 +485,10 @@ fn on_panel_release(ctx: &mut Ctx) {
 fn on_command(id: usize, ctx: &Ctx) {
     match id {
         ID_EXIT => unsafe {
-            let _ = PostMessageW(ctx.nid.hWnd, WM_DESTROY, WPARAM(0), LPARAM(0));
+            // WM_CLOSE, not a synthetic WM_DESTROY: posting WM_DESTROY runs the
+            // teardown handler without the window actually being destroyed,
+            // which leaves a live process holding windows nothing can reach.
+            let _ = PostMessageW(ctx.nid.hWnd, WM_CLOSE, WPARAM(0), LPARAM(0));
         },
         ID_REFRESH => {
             let _ = ctx.commands.send(Command::Refresh);
