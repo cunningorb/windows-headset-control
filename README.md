@@ -53,8 +53,14 @@ If that prints nothing, this project cannot talk to your headset.
 
 ## Installing
 
-```
-> headset-tray.exe --install
+There are no prebuilt binaries yet: releases will be signed, and the signing setup
+(`docs/release-signing.md`) is not in place. Until then, build from source — see
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for the toolchain requirements, which are more
+specific than usual.
+
+```powershell
+cargo build --release
+.\target\release\headset-tray.exe --install
 ```
 
 Copies itself to `%LOCALAPPDATA%\Programs\HeadsetTray`, starts at sign-in, and registers
