@@ -119,6 +119,61 @@ window, and **loses** `build_settings_menu` and `build_value_menu`. `show_menu` 
 the right-click menu (Refresh, Exit). Nothing in `headset-protocol`, `headset-device`, or
 `headset-cli` changes.
 
+## Transparency and window composition
+
+The mockups are a web page, so the 8 px margin around the panel is a CSS drop shadow over
+the page background, not window transparency. Reproducing it on a real desktop needs the
+panel to composite correctly over whatever happens to be behind it — taskbar, wallpaper,
+another window.
+
+**The panel is a layered window** (`WS_EX_LAYERED`) updated with `UpdateLayeredWindow`
+from a premultiplied-alpha bitmap that Direct2D renders. That buys three things a plain
+opaque window cannot:
+
+- The drop shadow composites over the real background instead of over a guessed colour.
+- Rounded corners get anti-aliased edges rather than a stair-stepped region clip.
+- The knob glow can fade to true transparency at its edges.
+
+The alternative — a normal window with the system `CS_DROPSHADOW` style — is far less code
+but produces Windows' shadow, not the mockup's. Given the 1:1 requirement, the layered
+window is the right cost.
+
+The panel body itself is **opaque** `#131623`. Sampling confirms a uniform fill with no
+blur or translucency behind it, so there is no acrylic or mica effect to reproduce.
+
+## Fidelity verification
+
+"As close to the screenshots as possible" is checkable rather than a matter of opinion, so
+the build includes the means to check it.
+
+`headset-tray.exe --render-panel <out.png> [--state <fixture>]` renders the panel offscreen
+to a PNG at exact size, through the same Direct2D path the live window uses, with the
+device state supplied from a fixture rather than hardware. Uses WIC, already a `windows`
+crate feature; no new crates and no device needed.
+
+That makes iteration objective: render, pixel-diff against the corresponding mockup, and
+work the difference down. It also means a later change that quietly shifts the layout can
+be caught by re-diffing rather than by noticing.
+
+**The known fidelity risk is the font.** The mockups were rendered by a browser; the panel
+renders through DirectWrite. If the page used `system-ui`, Opera on Windows resolves that
+to Segoe UI and DirectWrite will match closely. If it named a specific family such as
+Inter, glyph shapes and metrics will differ visibly and we would need that font installed
+or embedded. The diff harness will show which case we are in on the first render, and this
+is the most likely reason a first attempt looks subtly off.
+
+## Designed for tweaking
+
+Everything that determines appearance is data, in one place:
+
+- `theme.rs` holds every colour and metric as a named constant.
+- `layout.rs` computes positions from those constants; no literal offsets are scattered
+  through drawing code.
+
+A visual change is therefore a constant edit plus a rebuild, not a hunt through paint
+routines. The palette test pins the constants to the sampled values, so an accidental
+change fails a test — an intentional one just updates both together.
+
 ## Interaction
 
 | Input | Result |
@@ -168,7 +223,12 @@ every write replaces it with what the device actually reports.
   strings in the mockups (`Balanced`, `Game +7`, `Off`, `14`).
 - **Unit, `theme.rs`**: the palette constants match the sampled hex values, so a careless
   edit fails a test rather than silently changing the design.
-- **Not unit-tested**: Direct2D drawing itself, which needs a device. Verified by running.
+- **Pixel diff**: `--render-panel` output compared against the corresponding mockup for
+  each state (live, muted, sidetone, game/chat, both settings states). Reported as a
+  percentage of differing pixels and a worst-region location, so "close enough" is a
+  number rather than an impression.
+- **Not unit-tested**: Direct2D drawing itself, which needs a device. Verified by running
+  and by the diff above.
 - The `CONTRIBUTING.md` gate must pass, and footprint is measured and reported rather
   than asserted: target ~1 MB binary and under 20 MB resident.
 
