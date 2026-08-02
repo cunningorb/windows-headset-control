@@ -1,7 +1,10 @@
 //! All `unsafe` in this crate is confined to this module.
 //!
-//! Every function here opens devices with `dwDesiredAccess = 0`, which grants
-//! no read or write rights and therefore cannot contend with the audio stack.
+//! `read_caps` and `open_for_descriptors` open devices with
+//! `dwDesiredAccess = 0`, which grants no read or write rights and therefore
+//! cannot contend with the audio stack. `open_for_read` requests read access
+//! only (`FILE_GENERIC_READ`) and is used solely by the read-only transport in
+//! `transport.rs`; nothing in this crate ever requests write access.
 
 use std::ffi::c_void;
 
@@ -17,10 +20,15 @@ use windows::Win32::Devices::HumanInterfaceDevice::{
     HidP_GetButtonCaps, HidP_GetCaps, HidP_GetValueCaps, HidP_Input, HidP_Output, HIDD_ATTRIBUTES,
     HIDP_BUTTON_CAPS, HIDP_CAPS, HIDP_REPORT_TYPE, HIDP_VALUE_CAPS, PHIDP_PREPARSED_DATA,
 };
-use windows::Win32::Foundation::{CloseHandle, HANDLE, NTSTATUS};
-use windows::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_BUSY, ERROR_IO_PENDING, HANDLE, NTSTATUS, WAIT_TIMEOUT,
 };
+use windows::Win32::Storage::FileSystem::{
+    CreateFileW, ReadFile, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+};
+use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+use windows::Win32::System::IO::{CancelIo, GetOverlappedResult, OVERLAPPED};
 
 use crate::error::DeviceError;
 use crate::model::{ReportItem, ReportKind};
@@ -275,4 +283,113 @@ unsafe fn collect_report_items(prep: PHIDP_PREPARSED_DATA, caps: &HIDP_CAPS) -> 
     }
 
     items
+}
+
+/// Opens a collection for reading only. Never requests write access.
+pub fn open_for_read(path: &str) -> Result<HANDLE, DeviceError> {
+    unsafe {
+        let mut wide: Vec<u16> = path.encode_utf16().collect();
+        wide.push(0);
+        CreateFileW(
+            PCWSTR(wide.as_ptr()),
+            FILE_GENERIC_READ.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAG_OVERLAPPED,
+            None,
+        )
+        .map_err(map_win_error)
+    }
+}
+
+/// Opens with `dwDesiredAccess = 0`. Cannot perform I/O.
+pub fn open_for_descriptors(path: &str) -> Result<HANDLE, DeviceError> {
+    unsafe {
+        let mut wide: Vec<u16> = path.encode_utf16().collect();
+        wide.push(0);
+        CreateFileW(
+            PCWSTR(wide.as_ptr()),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            None,
+        )
+        .map_err(map_win_error)
+    }
+}
+
+/// Maps a Windows error to the crate's error type. Shared by the open helpers
+/// and by the overlapped-read error path, since both surface the same small
+/// set of Win32 error codes worth distinguishing.
+fn map_win_error(e: windows::core::Error) -> DeviceError {
+    match e.code().0 as u32 & 0xFFFF {
+        c if c == ERROR_ACCESS_DENIED.0 => DeviceError::AccessDenied,
+        c if c == ERROR_BUSY.0 => DeviceError::Busy,
+        _ => DeviceError::Os(e.to_string()),
+    }
+}
+
+pub fn close(handle: HANDLE) {
+    unsafe {
+        let _ = CloseHandle(handle);
+    }
+}
+
+/// Overlapped read with a hard deadline. Cancels the I/O on timeout so the
+/// handle can be closed cleanly rather than leaked.
+///
+/// `ReadFile` on an overlapped handle normally returns `Err` with
+/// `ERROR_IO_PENDING` even when the read is proceeding normally — that is the
+/// expected asynchronous path, not a failure. Any other error from `ReadFile`
+/// (bad handle, device removed, access denied, ...) is a real failure and must
+/// be reported immediately rather than being misdiagnosed as a slow device
+/// after waiting out the full timeout.
+pub fn read_with_timeout(
+    handle: HANDLE,
+    buf: &mut [u8],
+    timeout: std::time::Duration,
+) -> Result<usize, DeviceError> {
+    unsafe {
+        let event = CreateEventW(None, true, false, PCWSTR::null())
+            .map_err(|e| DeviceError::Os(e.to_string()))?;
+        let mut ov = OVERLAPPED {
+            hEvent: event,
+            ..Default::default()
+        };
+
+        let mut read: u32 = 0;
+        let started = ReadFile(handle, Some(buf), Some(&mut read), Some(&mut ov));
+
+        if let Err(e) = started {
+            let code = e.code().0 as u32 & 0xFFFF;
+            if code != ERROR_IO_PENDING.0 {
+                // A genuine failure, not the normal pending-I/O path. Report it
+                // now instead of falling through to wait out the timeout.
+                let _ = CloseHandle(event);
+                return Err(map_win_error(e));
+            }
+        } else {
+            let _ = CloseHandle(event);
+            return Ok(read as usize);
+        }
+
+        let ms = timeout.as_millis().min(u128::from(u32::MAX - 1)) as u32;
+        let wait = WaitForSingleObject(event, ms);
+        if wait == WAIT_TIMEOUT {
+            let _ = CancelIo(handle);
+            let _ = CloseHandle(event);
+            return Err(DeviceError::Timeout(timeout));
+        }
+
+        let mut transferred: u32 = 0;
+        let ok = GetOverlappedResult(handle, &ov, &mut transferred, false);
+        let _ = CloseHandle(event);
+        match ok {
+            Ok(()) => Ok(transferred as usize),
+            Err(e) => Err(map_win_error(e)),
+        }
+    }
 }

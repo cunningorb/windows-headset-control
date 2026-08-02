@@ -1,8 +1,10 @@
 mod ffi;
+mod transport;
 
 use crate::backend::{HidBackend, HidTransport};
 use crate::error::DeviceError;
 use crate::model::{CollectionInfo, DeviceId, OpenMode};
+use transport::{DescriptorHandle, WindowsTransport};
 
 pub struct WindowsHidBackend;
 
@@ -50,11 +52,28 @@ impl HidBackend for WindowsHidBackend {
         Ok(out)
     }
 
-    fn open(&self, _id: &DeviceId, _mode: OpenMode) -> Result<Box<dyn HidTransport>, DeviceError> {
-        // Implemented in Task 9. Deliberately absent until then so that no
-        // caller can open a real device before the read path is reviewed.
-        Err(DeviceError::Os(
-            "open is not implemented until Task 9".into(),
-        ))
+    fn open(&self, id: &DeviceId, mode: OpenMode) -> Result<Box<dyn HidTransport>, DeviceError> {
+        let info = self
+            .enumerate()?
+            .into_iter()
+            .find(|c| c.id == *id)
+            .ok_or(DeviceError::DongleNotFound)?;
+
+        if mode == OpenMode::ReadWrite && info.is_audio_stack_collection() {
+            return Err(DeviceError::RefusedAudioCollection);
+        }
+
+        match mode {
+            OpenMode::Descriptors => {
+                let h = ffi::open_for_descriptors(info.id.raw())?;
+                Ok(Box::new(DescriptorHandle::new(h, info.input_report_len)))
+            }
+            OpenMode::ReadWrite => {
+                // Phase 1 grants read access only, never write access, even for
+                // OpenMode::ReadWrite. Write access arrives with the write phase.
+                let h = ffi::open_for_read(info.id.raw())?;
+                Ok(Box::new(WindowsTransport::new(h, info.input_report_len)))
+            }
+        }
     }
 }
