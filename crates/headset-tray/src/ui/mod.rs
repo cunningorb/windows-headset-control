@@ -5,6 +5,7 @@
 //! primitive list through Direct2D. The split is what makes hit-testing, tick
 //! spacing and value mapping testable without a window, a GPU, or a headset.
 
+pub mod icon;
 pub mod layout;
 pub mod theme;
 
