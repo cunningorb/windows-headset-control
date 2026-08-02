@@ -1,8 +1,16 @@
 # Third-Party Notices
 
 This product bundles no third-party source code. It links Rust crates whose licenses
-are reproduced below. Regenerate with `cargo tree --workspace --prefix none --format "{p} {l}"`
-when dependencies change.
+are reproduced below. Regenerate when dependencies change:
+
+```powershell
+cargo tree --workspace --target x86_64-pc-windows-gnu --prefix none --format "{p} {l}"
+```
+
+`--target` is required, not decorative. Without it `cargo tree` resolves for whichever
+host you happen to be on, which decides whether `windows_x86_64_gnu` or
+`windows_x86_64_msvc` appears. This list describes the target this project actually
+builds and ships — see `rust-toolchain.toml`. CI checks it with the same command.
 
 | Crate | License |
 | ----- | ------- |

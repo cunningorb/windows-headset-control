@@ -36,22 +36,33 @@ jobs:
       - name: Third-party notices are current
         shell: pwsh
         run: |
+          # --target is not optional. Without it `cargo tree` resolves for the
+          # host triple, which is MSVC on this runner and GNU on a development
+          # machine building this project -- so the two disagree about whether
+          # windows_x86_64_msvc or windows_x86_64_gnu is a dependency, and the
+          # check passes locally while failing here. The notices describe what
+          # actually ships, and what ships is the GNU build.
+          #
           # Third-party crates only. A workspace member prints its absolute path
           # in parentheses, which must not reach a public log: this project's own
           # rules say device paths and machine-identifying strings stay out of
           # logs, and a checkout path names the user.
-          $thirdParty = cargo tree --workspace --prefix none --format "{p} {l}" |
+          $thirdParty = cargo tree --workspace --target x86_64-pc-windows-gnu --prefix none --format "{p} {l}" |
             Where-Object { $_ -match '\S' -and $_ -notmatch '\((?:[A-Za-z]:|/)' } |
             Sort-Object -Unique
-          $missing = $thirdParty | Where-Object {
-            $name = ($_ -split ' ')[0]
-            -not (Select-String -Path THIRD_PARTY_NOTICES.md -SimpleMatch $name -Quiet)
-          }
+          # Match the table rows, not the whole file. A substring search over the
+          # document counts a crate named in a sentence as "listed" -- which the
+          # paragraph explaining this very check managed to do, silently
+          # satisfying itself for a crate that appears in no table row.
+          $listed = Get-Content THIRD_PARTY_NOTICES.md |
+            Where-Object { $_ -match '^\|\s+(\S+)\s+v' } |
+            ForEach-Object { $Matches[1] }
+          $missing = $thirdParty | Where-Object { $listed -notcontains ($_ -split ' ')[0] }
           if ($missing) {
             Write-Host "Dependencies missing from THIRD_PARTY_NOTICES.md:"
             $missing | ForEach-Object { Write-Host "  $_" }
             Write-Host ""
-            Write-Host "Regenerate with: cargo tree --workspace --prefix none --format ""{p} {l}"""
+            Write-Host "Regenerate with: cargo tree --workspace --target x86_64-pc-windows-gnu --prefix none --format ""{p} {l}"""
             exit 1
           }
           Write-Host "All $($thirdParty.Count) third-party dependencies are listed."
