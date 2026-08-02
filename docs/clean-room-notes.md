@@ -19,7 +19,7 @@ code in this repository was written independently.
 | ---------- | ------ | ---------------------- |
 | VID `0x1532` | public discussion | Confirmed by our own enumeration |
 | PID `0x0577` | public discussion | **Refuted.** Our hardware reports `0x101B` |
-| Control on USB interface 5 | public discussion | Consistent; interface 5 carries the vendor collections, but exposes two of them |
+| Control on USB interface 5 | public discussion | Consistent, but not distinguishing: interface 5 carries all four collections on this device (both vendor-defined ones and both standard ones), so interface number alone cannot identify the control channel. See `docs/device-research.md`, "Interface number is deliberately not counted as a third leg of this corroboration." |
 | 64-byte reports | public discussion | Confirmed for `COL04` by our own `HidP_GetCaps` reading |
 | Report ID `0x02` | public discussion | Confirmed for `COL04` by our own `HidP_GetValueCaps` reading |
 | Sidetone range 0–15 | public discussion | Unverified. Out of Phase 1 scope |
