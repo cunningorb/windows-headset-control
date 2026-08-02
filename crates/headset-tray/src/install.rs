@@ -96,13 +96,16 @@ pub fn install() -> Result<PathBuf, InstallError> {
     Ok(target)
 }
 
-/// Removes the startup entry and the Add/Remove Programs entry.
+/// Removes the startup entry, the Add/Remove Programs entry, the running tray,
+/// and the install directory.
 ///
-/// Deliberately does **not** delete the executable it is running from: a process
-/// cannot delete its own image on Windows. The directory is left for the caller
-/// to remove, and the message says so rather than pretending it is gone.
+/// Windows will not let a process delete its own image, and `--uninstall` is
+/// normally run *from* the installed copy. Rather than leave the folder behind
+/// and tell the user to clear it up, this asks any running tray to exit and
+/// hands the directory to a detached helper that waits for this process to go
+/// and then removes it.
 pub fn uninstall() -> Result<Option<PathBuf>, InstallError> {
-    let exe = installed_exe();
+    let dir = install_dir();
     if !settings::set_run_on_startup(false, &PathBuf::new()) {
         return Err(InstallError::Registry("the startup entry"));
     }
@@ -111,7 +114,68 @@ pub fn uninstall() -> Result<Option<PathBuf>, InstallError> {
     if status != ERROR_SUCCESS {
         tracing::debug!("uninstall key absent or not removable");
     }
-    Ok(exe)
+
+    close_running_tray();
+    if let Some(d) = dir.as_ref() {
+        schedule_directory_removal(d);
+    }
+    Ok(dir)
+}
+
+/// Asks a running tray to shut down, so it stops holding its own image open.
+///
+/// Posts to the window rather than terminating the process: the tray's
+/// `WM_DESTROY` handler removes its notification icon, and killing it outright
+/// leaves a ghost icon in the tray until the user hovers over it.
+fn close_running_tray() {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW, WM_CLOSE};
+    unsafe {
+        let class: Vec<u16> = "HeadsetTrayWindow"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let hwnd = FindWindowW(PCWSTR(class.as_ptr()), PCWSTR::null());
+        if let Ok(h) = hwnd {
+            if !h.is_invalid() {
+                let _ = PostMessageW(h, WM_CLOSE, WPARAM(0), LPARAM(0));
+            }
+        }
+    }
+}
+
+/// Spawns a detached helper that deletes `dir` once this process has exited.
+///
+/// Retries, because the exact moment our image is released is not ours to know:
+/// the tray may still be shutting down. Bounded so a directory that genuinely
+/// cannot be removed leaves a stopped script rather than a spinning one.
+fn schedule_directory_removal(dir: &std::path::Path) {
+    let script = std::env::temp_dir().join("headset-tray-cleanup.cmd");
+    let body = format!(
+        "@echo off\r\n\
+         set n=0\r\n\
+         :retry\r\n\
+         set /a n+=1\r\n\
+         ping -n 2 127.0.0.1 >nul\r\n\
+         rd /s /q \"{dir}\" 2>nul\r\n\
+         if not exist \"{dir}\" goto done\r\n\
+         if %n% lss 15 goto retry\r\n\
+         :done\r\n\
+         del \"%~f0\"\r\n",
+        dir = dir.display()
+    );
+    if std::fs::write(&script, body).is_err() {
+        return;
+    }
+    // Detached and windowless: the user asked to uninstall, not to watch a
+    // console flash past.
+    let _ = std::process::Command::new("cmd.exe")
+        .arg("/c")
+        .arg(&script)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
 }
 
 fn set_uninstall_string(key: HKEY, name: &str, data: &str) -> Result<(), InstallError> {

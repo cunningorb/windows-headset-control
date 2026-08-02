@@ -40,6 +40,9 @@ insta = { version = "1", features = ["json"] }
 # reintroduces the `dlltool.exe` requirement and breaks the build; don't
 # "clean up" these pins without re-checking that constraint first.
 windows = { version = "0.58", features = [
+    # Direct2D's brush constructors are gated behind this: their properties
+    # struct carries a Matrix3x2 from Foundation::Numerics.
+    "Foundation_Numerics",
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Storage_FileSystem",
@@ -55,8 +58,15 @@ windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Shell",
     "Win32_Graphics_Gdi",
+    # Phase 3: the custom-drawn panel. Features of the pinned 0.58, not crates.
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct2D_Common",
+    "Win32_Graphics_DirectWrite",
+    "Win32_Graphics_Imaging",
+    "Win32_Graphics_Dxgi_Common",
     "Win32_System_LibraryLoader",
     "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
     "Win32_System_Console",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Registry",

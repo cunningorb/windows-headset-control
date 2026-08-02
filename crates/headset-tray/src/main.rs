@@ -15,6 +15,7 @@ fn main() {
     match mode.as_str() {
         "--install" => run_install(),
         "--uninstall" => run_uninstall(),
+        "--render-panel" => run_render_panel(),
         "--help" | "-h" | "/?" => report(
             "Headset Tray",
             "Usage:\n  headset-tray.exe              run the tray\n  \
@@ -68,19 +69,17 @@ fn run_install() {
 fn run_uninstall() {
     use headset_tray::install;
     match install::uninstall() {
-        Ok(exe) => {
-            let where_ = exe
+        Ok(dir) => {
+            let where_ = dir
                 .as_ref()
-                .and_then(|p| p.parent())
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "the install folder".into());
             report(
                 "Headset Tray uninstalled",
                 &format!(
-                    "Startup entry and uninstall registration removed.\n\n\
-                     The program file itself is still in:\n{where_}\n\n\
-                     Windows will not let a running program delete itself, so \
-                     remove that folder manually if you want it gone.",
+                    "Removed the startup entry, the uninstall registration, and \
+                     stopped the running tray.\n\n{where_}\nis being deleted now \
+                     - a moment is needed for this program to exit first.",
                 ),
             );
         }
@@ -89,6 +88,120 @@ fn run_uninstall() {
             &format!("Could not uninstall: {e}"),
         ),
     }
+}
+
+/// Renders panel states to PNGs so appearance can be diffed against the
+/// mockups without a window or a headset.
+///
+/// `--render-panel <dir> [state...]`, where each state names one of the fixtures
+/// below. With no states, renders all of them.
+#[cfg(windows)]
+fn run_render_panel() {
+    use headset_tray::state::HeadsetState;
+    use headset_tray::ui::{self, layout::SliderParam, View};
+    use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
+
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    let dir = args.first().cloned().unwrap_or_else(|| ".".to_string());
+    let _ = std::fs::create_dir_all(&dir);
+
+    let base = HeadsetState {
+        device_name: Some("BlackShark V3 Pro PS HID".into()),
+        connected: Some(true),
+        battery: Some(49),
+        sidetone: Some(0),
+        game_chat: Some(10),
+        mic_mute_hardware: Some(false),
+        mic_mute_os: Some(false),
+        warn_vendor_software: true,
+    };
+
+    let mut cases: Vec<(&str, HeadsetState, View, SliderParam)> = Vec::new();
+    cases.push((
+        "live-gamechat-balanced",
+        base.clone(),
+        View::Main,
+        SliderParam::GameChat,
+    ));
+
+    let mut muted = base.clone();
+    muted.mic_mute_os = Some(true);
+    cases.push((
+        "muted-gamechat-balanced",
+        muted.clone(),
+        View::Main,
+        SliderParam::GameChat,
+    ));
+
+    let mut gc17 = muted.clone();
+    gc17.game_chat = Some(17);
+    cases.push(("muted-gamechat-17", gc17, View::Main, SliderParam::GameChat));
+
+    let mut st0 = muted.clone();
+    st0.sidetone = Some(0);
+    cases.push(("muted-sidetone-off", st0, View::Main, SliderParam::Sidetone));
+
+    let mut st14 = muted.clone();
+    st14.sidetone = Some(14);
+    cases.push(("muted-sidetone-14", st14, View::Main, SliderParam::Sidetone));
+
+    let mut nowarn = base.clone();
+    nowarn.warn_vendor_software = false;
+    nowarn.sidetone = Some(14);
+    cases.push((
+        "live-sidetone-14-nobanner",
+        nowarn,
+        View::Main,
+        SliderParam::Sidetone,
+    ));
+
+    cases.push((
+        "settings",
+        base.clone(),
+        View::Settings,
+        SliderParam::GameChat,
+    ));
+
+    let mut off = base.clone();
+    off.connected = Some(false);
+    off.battery = None;
+    off.sidetone = None;
+    off.game_chat = None;
+    off.mic_mute_hardware = None;
+    cases.push(("disconnected", off, View::Main, SliderParam::GameChat));
+
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+    }
+    let renderer = match ui::render::Renderer::new() {
+        Ok(r) => r,
+        Err(e) => {
+            report(
+                "Render failed",
+                &format!("Could not create the renderer: {e}"),
+            );
+            return;
+        }
+    };
+
+    let mut lines = Vec::new();
+    for (name, state, view, param) in cases {
+        if args.len() > 1 && !args[1..].iter().any(|a| a == name) {
+            continue;
+        }
+        let panel = ui::build(&state, view, param, None);
+        match renderer.render(&panel, 1.0) {
+            Ok(img) => {
+                let path = format!("{dir}\\{name}.png");
+                match renderer.save_png(&img, &path) {
+                    Ok(()) => lines.push(format!("{name}: {}x{}", img.width, img.height)),
+                    Err(e) => lines.push(format!("{name}: save failed: {e}")),
+                }
+            }
+            Err(e) => lines.push(format!("{name}: render failed: {e}")),
+        }
+    }
+    report("Rendered panels", &lines.join("\n"));
 }
 
 #[cfg(windows)]
@@ -117,7 +230,9 @@ fn run_tray() {
         let backend = headset_device::WindowsHidBackend::new();
         worker::run(&backend, rx, |s| {
             if let Ok(mut guard) = worker_state.lock() {
-                *guard = s;
+                // Merge, never replace: `mic_mute_os` and `warn_vendor_software`
+                // belong to the UI thread and the worker has no values for them.
+                guard.apply_device_snapshot(&s);
             }
             win32::post_state(worker_hwnd.load(Ordering::Relaxed));
         });
