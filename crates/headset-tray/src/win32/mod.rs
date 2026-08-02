@@ -48,6 +48,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 // Not part of any public API: these are the tray's own window plumbing, and
 // several are `unsafe` in ways only this module's call sites can uphold.
 pub(crate) mod panel;
+pub(crate) mod place;
 
 use crate::state::HeadsetState;
 use crate::ui::{self, HitTarget, SliderParam, View};
