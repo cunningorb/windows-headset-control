@@ -6,12 +6,12 @@ Measured on our own hardware with `HidP_GetCaps` and `HidP_GetValueCaps` (develo
 machine, 2026-08-01, read-only spike). Treat as ground truth; re-verify if hardware
 changes.
 
-| Collection | Usage page | Usage | Input len | Output len | Feature len | In report ID | Out report ID |
-| ---------- | ---------- | ----- | --------- | ---------- | ----------- | ------------ | ------------- |
-| `COL01`    | `0x000C`   | `0x01`| 2         | 0          | 0           | `0x0C`       | —              |
-| `COL02`    | `0xFF13`   | `0x01`| 62        | 62         | 0           | `0x07`       | `0x06`         |
-| `COL03`    | `0x000B`   | `0x05`| 2         | 2          | 0           | `0x05`       | `0x05`         |
-| `COL04`    | `0xFF14`   | `0x01`| 64        | 64         | 0           | `0x02`       | `0x02`         |
+| Collection | Usage page | Usage    | Input len | Output len | Feature len | In report ID | Out report ID |
+| ---------- | ---------- | -------- | --------- | ---------- | ----------- | ------------ | ------------- |
+| `COL01`    | `0x000C`   | `0x0001` | 2         | 0          | 0           | `0x0C`       | —              |
+| `COL02`    | `0xFF13`   | `0x0001` | 62        | 62         | 0           | `0x07`       | `0x06`         |
+| `COL03`    | `0x000B`   | `0x0005` | 2         | 2          | 0           | `0x05`       | `0x05`         |
+| `COL04`    | `0xFF14`   | `0x0001` | 64        | 64         | 0           | `0x02`       | `0x02`         |
 
 VID `0x1532`, PID `0x101B`, version `0x0100`, product string `BlackShark V3 Pro PS HID`,
 manufacturer `Razer Inc`, serial present on all four. All four collections are exposed
@@ -220,13 +220,20 @@ Baseline above:
 **What the corroboration does, and does not, license us to conclude.**
 
 Report ID `0x02` and the 64-byte report size both matching the public prior art's
-hypotheses, *despite* the PID being wrong, is a striking corroboration — three
-independent structural details (report ID, report size, and control-relevant
-interface number) lining up with a different product's publicly discussed behavior is
-unlikely to be pure coincidence. It is reasonable to read this as evidence that the
-BlackShark V3 Pro PS (`0x101B`) and the product with PID `0x0577` plausibly share a
-firmware or protocol lineage at the framing level (report ID, report size, which
-interface carries control).
+hypotheses, *despite* the PID being wrong, is a striking corroboration — two
+independent structural details (report ID and report size) lining up with a
+different product's publicly discussed behavior is unlikely to be pure coincidence.
+It is reasonable to read this as evidence that the BlackShark V3 Pro PS (`0x101B`)
+and the product with PID `0x0577` plausibly share a firmware or protocol lineage at
+the framing level (report ID, report size).
+
+Interface number is deliberately not counted as a third leg of this corroboration.
+Every collection on this device — including `COL01` and `COL03`, both excluded
+outright as candidates — sits on interface 5 (see Verified Hardware Baseline,
+above), so interface number does not distinguish the control channel from anything
+else on this device. It therefore cannot serve as independent evidence that this
+device's control framing shares lineage with the `0x0577` product's control
+channel; it is merely consistent with the prior-art hypothesis, nothing more.
 
 It does **not** license us to conclude that the *payload* semantics — what any of the
 63 unknown bytes inside that report mean, what command values are valid, what a
