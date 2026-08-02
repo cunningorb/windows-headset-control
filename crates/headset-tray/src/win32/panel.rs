@@ -129,17 +129,37 @@ pub unsafe fn hide(hwnd: HWND) {
     let _ = ShowWindow(hwnd, SW_HIDE);
 }
 
-/// Places the panel above the mouse, clamped to the monitor's work area.
+/// Places the panel just above the tray icon, clamped to the work area.
 ///
-/// Anchored to the cursor rather than to the icon: the shell does not hand us
-/// the icon's rectangle in the tray callback, and the cursor is where the user
-/// just clicked anyway.
-pub unsafe fn anchor(w: i32, h: i32) -> (i32, i32) {
+/// Asks the shell where the icon actually is rather than assuming the pointer is
+/// over it. The cursor is only a fallback: it happens to be right when the user
+/// clicked the icon, and wrong for every other way the panel can be opened —
+/// which is exactly how a panel ends up in the middle of the screen.
+pub unsafe fn anchor(owner: HWND, icon_id: u32, w: i32, h: i32) -> (i32, i32) {
+    use windows::Win32::UI::Shell::{Shell_NotifyIconGetRect, NOTIFYICONIDENTIFIER};
     use windows::Win32::UI::WindowsAndMessaging::{
         GetCursorPos, SystemParametersInfoW, SPI_GETWORKAREA, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
     };
+
+    let ident = NOTIFYICONIDENTIFIER {
+        cbSize: std::mem::size_of::<NOTIFYICONIDENTIFIER>() as u32,
+        hWnd: owner,
+        uID: icon_id,
+        ..Default::default()
+    };
     let mut pt = POINT::default();
-    let _ = GetCursorPos(&mut pt);
+    match Shell_NotifyIconGetRect(&ident) {
+        Ok(r) => {
+            // Centre of the icon: the panel is centred on this below.
+            pt.x = (r.left + r.right) / 2;
+            pt.y = r.top;
+        }
+        Err(_) => {
+            // The icon may be hidden in the overflow flyout, where the shell
+            // reports no rectangle. The cursor is the best remaining guess.
+            let _ = GetCursorPos(&mut pt);
+        }
+    }
 
     let mut work = RECT::default();
     let _ = SystemParametersInfoW(

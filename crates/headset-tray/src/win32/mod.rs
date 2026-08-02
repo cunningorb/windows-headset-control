@@ -333,7 +333,12 @@ fn redraw_panel(ctx: &mut Ctx) {
     let first_show = !ctx.panel_visible;
     unsafe {
         let (x, y) = if first_show {
-            panel::anchor(img.width as i32, img.height as i32)
+            panel::anchor(
+                ctx.nid.hWnd,
+                ctx.nid.uID,
+                img.width as i32,
+                img.height as i32,
+            )
         } else {
             // Keep the panel where it is across repaints; re-anchoring to the
             // cursor would make it walk around the screen as values update.
