@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A Windows tray application for supported wireless headset settings."
 
 [[bin]]
 name = "headset-tray"

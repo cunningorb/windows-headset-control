@@ -12,11 +12,9 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
 publish = false
-# No `license` key: this is a private, proprietary, unpublished workspace
-# (`publish = false` above). "UNLICENSED" is an npm/package.json convention,
-# not a valid SPDX license expression, so it does not belong in `license`.
-# Omitting the key entirely is the conventional way to say "proprietary" in
-# a Cargo manifest.
+license = "MIT OR Apache-2.0"
+description = "Experimental native Windows HID controller for supported wireless headset settings."
+repository = "https://github.com/cunningorb/windows-headset-control"
 
 [workspace.dependencies]
 anyhow = "1"

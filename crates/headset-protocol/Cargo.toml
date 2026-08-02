@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pure protocol logic for a Razer BlackShark V3 Pro: framing, checksum, and observed-identifier allowlists. No OS access."
 
 [dependencies]
 serde = { workspace = true }
