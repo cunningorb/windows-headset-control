@@ -56,6 +56,8 @@ pub const WM_STATE: u32 = WM_APP + 2;
 const ID_EXIT: usize = 1;
 const ID_MUTE: usize = 2;
 const ID_REFRESH: usize = 3;
+const ID_STARTUP: usize = 4;
+const ID_SYNAPSE_WARNING: usize = 5;
 const ID_SIDETONE_BASE: usize = 100;
 const ID_GAMECHAT_BASE: usize = 200;
 
@@ -224,6 +226,31 @@ fn on_command(id: usize, ctx: &Ctx) {
         ID_REFRESH => {
             let _ = ctx.commands.send(Command::Refresh);
         }
+        ID_STARTUP => {
+            // Point the Run entry at the installed copy when there is one, so
+            // enabling startup from a freshly built binary still survives the
+            // build directory being cleaned.
+            let target = crate::install::installed_exe()
+                .filter(|p| p.exists())
+                .or_else(|| std::env::current_exe().ok());
+            if let Some(exe) = target {
+                let now = crate::settings::run_on_startup();
+                let _ = crate::settings::set_run_on_startup(!now, &exe);
+            }
+        }
+        ID_SYNAPSE_WARNING => {
+            let now = crate::settings::show_synapse_warning();
+            if crate::settings::set_show_synapse_warning(!now) {
+                if let Ok(mut s) = ctx.state.lock() {
+                    // Recompute rather than just clearing: turning the warning
+                    // back on must restore it only if Synapse is actually there.
+                    s.warn_vendor_software = crate::warn_vendor_software();
+                }
+                unsafe {
+                    let _ = PostMessageW(ctx.nid.hWnd, WM_STATE, WPARAM(0), LPARAM(0));
+                }
+            }
+        }
         ID_MUTE => {
             // Only the OS endpoint can be toggled. The headset's hardware switch
             // is not software-writable and no vendor set-mute command exists.
@@ -324,7 +351,16 @@ unsafe fn show_menu(hwnd: HWND, ctx: &Ctx) {
         ID_REFRESH,
         PCWSTR(wide("Refresh").as_ptr()),
     );
-    if state.vendor_software_running {
+    if let Some(settings_menu) = build_settings_menu() {
+        let _ = AppendMenuW(
+            menu,
+            MF_STRING | MF_POPUP,
+            settings_menu.0 as usize,
+            PCWSTR(wide("Settings").as_ptr()),
+        );
+    }
+
+    if state.warn_vendor_software {
         let _ = AppendMenuW(
             menu,
             MF_STRING | MF_DISABLED | MF_GRAYED,
@@ -349,6 +385,56 @@ unsafe fn show_menu(hwnd: HWND, ctx: &Ctx) {
         None,
     );
     let _ = DestroyMenu(menu);
+}
+
+/// Builds the Settings submenu.
+///
+/// Both entries read their state live rather than from a cached copy. The
+/// startup checkbox in particular reflects the same registry value Windows
+/// reads at logon, so disabling the entry from Task Manager's Startup tab shows
+/// up here rather than being contradicted by a stale setting.
+unsafe fn build_settings_menu() -> Option<HMENU> {
+    let sub = CreatePopupMenu().ok()?;
+
+    let startup_on = crate::settings::run_on_startup();
+    let startup_flags = if startup_on {
+        MF_STRING | MF_CHECKED
+    } else {
+        MF_STRING
+    };
+    let _ = AppendMenuW(
+        sub,
+        startup_flags,
+        ID_STARTUP,
+        PCWSTR(wide("Run on Windows startup").as_ptr()),
+    );
+
+    let warn_on = crate::settings::show_synapse_warning();
+    let warn_flags = if warn_on {
+        MF_STRING | MF_CHECKED
+    } else {
+        MF_STRING
+    };
+    let _ = AppendMenuW(
+        sub,
+        warn_flags,
+        ID_SYNAPSE_WARNING,
+        PCWSTR(wide("Warn when Synapse is running").as_ptr()),
+    );
+
+    // Where the executable actually lives matters when startup is on: a Run
+    // entry pointing at a build output in a source tree will break the moment
+    // that tree is cleaned. Show it rather than let it fail silently later.
+    if startup_on && !crate::install::running_from_install_dir() {
+        let _ = AppendMenuW(sub, MF_SEPARATOR, 0, PCWSTR::null());
+        let _ = AppendMenuW(
+            sub,
+            MF_STRING | MF_DISABLED | MF_GRAYED,
+            0,
+            PCWSTR(wide("Running from outside the install folder").as_ptr()),
+        );
+    }
+    Some(sub)
 }
 
 /// Builds a submenu of discrete values, checking the current one.

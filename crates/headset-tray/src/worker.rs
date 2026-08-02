@@ -50,7 +50,7 @@ pub fn run<B: HidBackend, F: Fn(HeadsetState)>(
     notify: F,
 ) {
     let mut state = HeadsetState {
-        vendor_software_running: crate::vendor_software_running(),
+        warn_vendor_software: crate::warn_vendor_software(),
         ..Default::default()
     };
     let mut session: Option<ControlSession> = None;

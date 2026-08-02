@@ -22,8 +22,11 @@ pub struct HeadsetState {
     pub mic_mute_hardware: Option<bool>,
     /// The Windows capture endpoint's mute, which is a separate state.
     pub mic_mute_os: Option<bool>,
-    /// Whether Razer's engine is running and may contend for settings.
-    pub vendor_software_running: bool,
+    /// Whether to warn that Razer's engine is running and may contend for
+    /// settings. This is detection **and** the user's preference combined: the
+    /// warning is suppressed when they have turned it off, so a single flag is
+    /// what the renderers need. Raw detection lives in `win32::process_running`.
+    pub warn_vendor_software: bool,
 }
 
 impl HeadsetState {
@@ -77,7 +80,7 @@ impl HeadsetState {
         if self.effectively_muted() == Some(true) {
             s.push_str(" - mic muted");
         }
-        if self.vendor_software_running {
+        if self.warn_vendor_software {
             s.push_str("\nSynapse is running and may change settings");
         }
         s
@@ -163,7 +166,7 @@ mod tests {
             connected: Some(true),
             battery: Some(100),
             mic_mute_hardware: Some(true),
-            vendor_software_running: true,
+            warn_vendor_software: true,
             ..Default::default()
         };
         assert!(s.tooltip().chars().count() < 128, "{}", s.tooltip());
