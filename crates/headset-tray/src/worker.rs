@@ -49,10 +49,11 @@ pub fn run<B: HidBackend, F: Fn(HeadsetState)>(
     commands: Receiver<Command>,
     notify: F,
 ) {
-    let mut state = HeadsetState {
-        warn_vendor_software: crate::warn_vendor_software(),
-        ..Default::default()
-    };
+    // Device-owned state only. `warn_vendor_software` and `mic_mute_os` belong
+    // to the UI thread; setting them here would be a value this thread has no
+    // business having an opinion about, and it used to be computed once at
+    // startup and then quietly stamped over the user's choice.
+    let mut state = HeadsetState::default();
     let mut session: Option<ControlSession> = None;
     let mut since_refresh = Duration::ZERO;
 

@@ -386,6 +386,11 @@ fn toggle_panel(ctx: &mut Ctx) {
         // Ask for fresh values on open rather than showing whatever was last
         // pushed: the device is the source of truth.
         let _ = ctx.commands.send(Command::Refresh);
+        // Re-evaluate the warning here rather than trusting a cached answer:
+        // Synapse may have started or stopped since the panel was last open.
+        if let Ok(mut s) = ctx.state.lock() {
+            s.warn_vendor_software = crate::warn_vendor_software();
+        }
         redraw_panel(ctx);
     }
 }
@@ -413,6 +418,12 @@ fn on_panel_press(ctx: &mut Ctx, x: f32, y: f32) {
         }
         HitTarget::Refresh => {
             let _ = ctx.commands.send(Command::Refresh);
+            // Refresh means "re-read everything", including whether Synapse is
+            // still running. Only the device half comes back from the worker.
+            if let Ok(mut s) = ctx.state.lock() {
+                s.warn_vendor_software = crate::warn_vendor_software();
+            }
+            redraw_panel(ctx);
         }
         HitTarget::Switcher => {
             ctx.param = ctx.param.other();

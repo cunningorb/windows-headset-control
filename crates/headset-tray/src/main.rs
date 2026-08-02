@@ -230,7 +230,9 @@ fn run_tray() {
         let backend = headset_device::WindowsHidBackend::new();
         worker::run(&backend, rx, |s| {
             if let Ok(mut guard) = worker_state.lock() {
-                *guard = s;
+                // Merge, never replace: `mic_mute_os` and `warn_vendor_software`
+                // belong to the UI thread and the worker has no values for them.
+                guard.apply_device_snapshot(&s);
             }
             win32::post_state(worker_hwnd.load(Ordering::Relaxed));
         });

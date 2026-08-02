@@ -37,6 +37,25 @@ pub struct HeadsetState {
 }
 
 impl HeadsetState {
+    /// Copies the fields the device thread owns, leaving the rest alone.
+    ///
+    /// State has two owners and they must not overwrite each other. The worker
+    /// owns everything read from the headset; the UI thread owns
+    /// `mic_mute_os` (a Windows audio endpoint, which the worker never reads)
+    /// and `warn_vendor_software` (a user setting combined with a process
+    /// check). Replacing the whole struct with the worker's snapshot silently
+    /// reverted both — turning the Synapse warning off and then refreshing
+    /// brought the warning straight back, because the worker's copy still said
+    /// it was on.
+    pub fn apply_device_snapshot(&mut self, from: &HeadsetState) {
+        self.device_name = from.device_name.clone();
+        self.connected = from.connected;
+        self.battery = from.battery;
+        self.sidetone = from.sidetone;
+        self.game_chat = from.game_chat;
+        self.mic_mute_hardware = from.mic_mute_hardware;
+    }
+
     /// Display name for the header.
     ///
     /// Strips the trailing " HID" the descriptor carries, which is an artefact
@@ -188,6 +207,40 @@ mod tests {
             ..Default::default()
         };
         assert!(s.tooltip().chars().count() < 128, "{}", s.tooltip());
+    }
+
+    #[test]
+    fn a_device_snapshot_does_not_clobber_ui_owned_fields() {
+        // The exact reported bug: turn the Synapse warning off, hit Refresh,
+        // and the warning came back because the worker's snapshot still said
+        // it was on. Same class of fault silently reverted the OS mute.
+        let mut ui = HeadsetState {
+            warn_vendor_software: false,
+            mic_mute_os: Some(true),
+            battery: Some(10),
+            ..Default::default()
+        };
+        let from_worker = HeadsetState {
+            warn_vendor_software: true,
+            mic_mute_os: None,
+            battery: Some(54),
+            connected: Some(true),
+            ..Default::default()
+        };
+
+        ui.apply_device_snapshot(&from_worker);
+
+        assert_eq!(ui.battery, Some(54), "device fields must update");
+        assert_eq!(ui.connected, Some(true));
+        assert!(
+            !ui.warn_vendor_software,
+            "the user turned the warning off; a device refresh must not turn it back on"
+        );
+        assert_eq!(
+            ui.mic_mute_os,
+            Some(true),
+            "the OS mute is the UI's to own; the worker never reads it"
+        );
     }
 
     #[test]
