@@ -297,8 +297,12 @@ mod tests {
         // too, which is how an installation removed by one tool could leave the
         // other's entry behind, pointing at a deleted executable.
         let src = include_str!("install.rs");
+        // Assembled at run time. Written as a literal, this assertion's own
+        // needle would be the only occurrence in the file, and the test would
+        // fail against itself — which is exactly what it did.
+        let needle = format!(r"CurrentVersion\{}", "Uninstall");
         assert!(
-            !src.contains(r"CurrentVersion\Uninstall"),
+            !src.contains(&needle),
             "install.rs writes an Add/Remove Programs key again"
         );
     }
