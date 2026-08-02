@@ -22,6 +22,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::ui::render::RenderedPanel;
+use crate::win32::place;
 
 pub const CLASS_NAME: PCWSTR = w!("HeadsetTrayPanel");
 
@@ -129,7 +130,32 @@ pub unsafe fn hide(hwnd: HWND) {
     let _ = ShowWindow(hwnd, SW_HIDE);
 }
 
-/// Places the panel just above the tray icon, clamped to the work area.
+/// The work area of the monitor `r` sits on.
+///
+/// **Not** `SystemParametersInfoW(SPI_GETWORKAREA)`, which is documented as
+/// reporting the primary display and therefore clamps a panel on any other
+/// monitor against the wrong rectangle.
+unsafe fn work_area_for(r: RECT) -> place::Bounds {
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromRect, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    };
+
+    let monitor = MonitorFromRect(&r, MONITOR_DEFAULTTONEAREST);
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if GetMonitorInfoW(monitor, &mut info).as_bool() {
+        place::Bounds::from_rect(info.rcWork)
+    } else {
+        // No monitor information at all. The icon's own rectangle is a poor
+        // work area but a finite one, and it keeps the panel on screen.
+        place::Bounds::from_rect(r)
+    }
+}
+
+/// Places the panel just above the tray icon, clamped to the work area of the
+/// monitor the icon is on.
 ///
 /// Asks the shell where the icon actually is rather than assuming the pointer is
 /// over it. The cursor is only a fallback: it happens to be right when the user
@@ -137,9 +163,7 @@ pub unsafe fn hide(hwnd: HWND) {
 /// which is exactly how a panel ends up in the middle of the screen.
 pub unsafe fn anchor(owner: HWND, icon_id: u32, w: i32, h: i32) -> (i32, i32) {
     use windows::Win32::UI::Shell::{Shell_NotifyIconGetRect, NOTIFYICONIDENTIFIER};
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetCursorPos, SystemParametersInfoW, SPI_GETWORKAREA, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
-    };
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
     let ident = NOTIFYICONIDENTIFIER {
         cbSize: std::mem::size_of::<NOTIFYICONIDENTIFIER>() as u32,
@@ -147,45 +171,24 @@ pub unsafe fn anchor(owner: HWND, icon_id: u32, w: i32, h: i32) -> (i32, i32) {
         uID: icon_id,
         ..Default::default()
     };
-    let mut pt = POINT::default();
-    match Shell_NotifyIconGetRect(&ident) {
-        Ok(r) => {
-            // Centre of the icon: the panel is centred on this below.
-            pt.x = (r.left + r.right) / 2;
-            pt.y = r.top;
-        }
+    let icon = match Shell_NotifyIconGetRect(&ident) {
+        Ok(r) => r,
         Err(_) => {
             // The icon may be hidden in the overflow flyout, where the shell
-            // reports no rectangle. The cursor is the best remaining guess.
+            // reports no rectangle. The cursor is the best remaining guess, as
+            // a zero-sized rectangle at that point.
+            let mut pt = POINT::default();
             let _ = GetCursorPos(&mut pt);
+            RECT {
+                left: pt.x,
+                top: pt.y,
+                right: pt.x,
+                bottom: pt.y,
+            }
         }
-    }
-
-    let mut work = RECT::default();
-    let _ = SystemParametersInfoW(
-        SPI_GETWORKAREA,
-        0,
-        Some(&mut work as *mut RECT as *mut std::ffi::c_void),
-        SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
-    );
-
-    let margin = 8;
-    let mut x = pt.x - w / 2;
-    let mut y = pt.y - h - margin;
-    if x + w > work.right {
-        x = work.right - w;
-    }
-    if x < work.left {
-        x = work.left;
-    }
-    if y < work.top {
-        // Taskbar at the top: drop below the cursor instead of off-screen.
-        y = pt.y + margin;
-    }
-    if y + h > work.bottom {
-        y = work.bottom - h;
-    }
-    (x, y)
+    };
+    let work = work_area_for(icon);
+    place::above_icon(place::Bounds::from_rect(icon), work, w, h, 8)
 }
 
 /// Repositions an already-placed panel for a new height, holding its **bottom**
@@ -200,29 +203,12 @@ pub unsafe fn anchor(owner: HWND, icon_id: u32, w: i32, h: i32) -> (i32, i32) {
 /// Clamped to the work area so a panel taller than the space above the icon
 /// runs off neither end.
 pub unsafe fn reanchor_bottom(hwnd: HWND, h: i32) -> (i32, i32) {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowRect, SystemParametersInfoW, SPI_GETWORKAREA, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
-    };
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
 
     let mut r = RECT::default();
     let _ = GetWindowRect(hwnd, &mut r);
-
-    let mut work = RECT::default();
-    let _ = SystemParametersInfoW(
-        SPI_GETWORKAREA,
-        0,
-        Some(&mut work as *mut RECT as *mut std::ffi::c_void),
-        SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
-    );
-
-    let mut y = r.bottom - h;
-    if y + h > work.bottom {
-        y = work.bottom - h;
-    }
-    if y < work.top {
-        y = work.top;
-    }
-    (r.left, y)
+    let work = work_area_for(r);
+    place::hold_bottom(place::Bounds::from_rect(r), work, h)
 }
 
 /// Stashes a pointer on the window so the shared wndproc can tell which window

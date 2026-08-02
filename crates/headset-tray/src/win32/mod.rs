@@ -39,15 +39,18 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
     DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW, LoadCursorW,
-    PostMessageW, PostQuitMessage, RegisterClassW, SetForegroundWindow, TrackPopupMenu,
-    TranslateMessage, HICON, ICONINFO, IDC_ARROW, MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN,
-    TPM_RIGHTALIGN, WINDOW_EX_STYLE, WM_ACTIVATE, WM_APP, WM_CLOSE, WM_COMMAND, WM_DESTROY,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPED,
+    PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow,
+    TrackPopupMenu, TranslateMessage, HICON, ICONINFO, IDC_ARROW, MF_SEPARATOR, MF_STRING, MSG,
+    TPM_BOTTOMALIGN, TPM_RIGHTALIGN, WINDOW_EX_STYLE, WM_ACTIVATE, WM_APP, WM_CLOSE, WM_COMMAND,
+    WM_DESTROY, WM_DPICHANGED, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONUP, WNDCLASSW,
+    WS_OVERLAPPED,
 };
 
 // Not part of any public API: these are the tray's own window plumbing, and
 // several are `unsafe` in ways only this module's call sites can uphold.
+pub(crate) mod dpi;
 pub(crate) mod panel;
+pub(crate) mod place;
 
 use crate::state::HeadsetState;
 use crate::ui::{self, HitTarget, SliderParam, View};
@@ -58,6 +61,17 @@ use headset_protocol::{NoiseControl, NoiseMode};
 const WM_TRAY: u32 = WM_APP + 1;
 /// Posted by the worker thread when state changed.
 pub const WM_STATE: u32 = WM_APP + 2;
+
+/// Posted by a second instance to ask the first to show itself.
+pub const WM_SHOW_PANEL: u32 = WM_APP + 3;
+
+/// The shell's "I have restarted, re-add your icon" broadcast.
+///
+/// Registered at runtime rather than being a constant: `RegisterWindowMessageW`
+/// allocates the value, and every process that registers the same string gets
+/// the same number. Zero means registration failed, which must never match an
+/// incoming message.
+static TASKBAR_CREATED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 const ID_EXIT: usize = 1;
 const ID_MUTE: usize = 2;
@@ -87,9 +101,17 @@ struct Ctx {
     track: Option<crate::ui::layout::TrackGeometry>,
     /// ANC level track from the last render. `None` in every mode but ANC.
     level_track: Option<crate::ui::layout::LevelTrack>,
+    /// Render scale for the display the panel is on. Mouse coordinates arrive
+    /// in physical pixels and `ui::layout` works in logical ones, so this is
+    /// also the divisor for hit-testing.
+    scale: f32,
     /// Value being dragged. Shown instead of the device's value until release,
     /// which is what makes one write per adjustment rather than twenty.
     drag: Option<u8>,
+    /// Noise state asked for but not yet confirmed. Shown in place of the
+    /// device's own until the read-back arrives, exactly as `drag` is for the
+    /// slider.
+    pending_noise: Option<NoiseControl>,
     panel_visible: bool,
 }
 
@@ -121,6 +143,74 @@ fn with_ctx<R>(f: impl FnOnce(&mut Ctx) -> R) -> Option<R> {
     })
 }
 
+/// Holds the single-instance mutex for the life of the process.
+///
+/// Dropping this releases the claim, so it must be bound to a named local for
+/// the whole run — `let _ = claim_single_instance()` would drop it immediately
+/// and let a second instance straight in.
+pub struct OwnedMutex(windows::Win32::Foundation::HANDLE);
+
+impl Drop for OwnedMutex {
+    fn drop(&mut self) {
+        // May be null: the "could not create a mutex" branch below still hands
+        // back an OwnedMutex so the caller has one code path, and closing a
+        // null handle is an error rather than a no-op.
+        if !self.0.is_invalid() {
+            unsafe {
+                let _ = CloseHandle(self.0);
+            }
+        }
+    }
+}
+
+pub enum SingleInstance {
+    Claimed(OwnedMutex),
+    AlreadyRunning,
+}
+
+/// Claims the right to be the one running tray for this user session.
+///
+/// `Local\` rather than `Global\`: the tray is per-user and per-session by
+/// design — it installs to `%LOCALAPPDATA%` and writes only to
+/// `HKEY_CURRENT_USER` — and `Global\` would additionally block a second user
+/// on the same machine from running their own.
+pub fn claim_single_instance() -> SingleInstance {
+    use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+    use windows::Win32::System::Threading::CreateMutexW;
+
+    unsafe {
+        match CreateMutexW(None, TRUE, w!("Local\\HeadsetTray.SingleInstance")) {
+            // The handle is returned even when the mutex already existed, so
+            // the error code is what distinguishes the two, not the result.
+            Ok(h) => {
+                if GetLastError() == ERROR_ALREADY_EXISTS {
+                    let _ = CloseHandle(h);
+                    SingleInstance::AlreadyRunning
+                } else {
+                    SingleInstance::Claimed(OwnedMutex(h))
+                }
+            }
+            // Without a mutex there is no way to tell. Starting is the less
+            // annoying failure: a duplicate icon beats refusing to run.
+            Err(e) => {
+                tracing::warn!("single-instance mutex unavailable: {e}");
+                SingleInstance::Claimed(OwnedMutex(windows::Win32::Foundation::HANDLE::default()))
+            }
+        }
+    }
+}
+
+/// Asks an already-running tray to show its panel, so a second launch does
+/// something useful instead of nothing.
+pub fn signal_existing_instance() {
+    use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
+    unsafe {
+        if let Ok(h) = FindWindowW(w!("HeadsetTrayWindow"), PCWSTR::null()) {
+            let _ = PostMessageW(h, WM_SHOW_PANEL, WPARAM(0), LPARAM(0));
+        }
+    }
+}
+
 /// Runs the tray UI on the calling thread until the user exits.
 ///
 /// Blocks. `state` is shared with the worker thread, which posts [`WM_STATE`]
@@ -132,6 +222,9 @@ pub fn run_ui_with<F: FnOnce(isize)>(
     on_window: F,
 ) -> windows::core::Result<()> {
     unsafe {
+        // Before any window exists: the awareness context is fixed at first use.
+        dpi::make_process_per_monitor_aware();
+
         // Apartment-threaded because this thread also pumps messages, which is
         // what COM's STA contract expects.
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
@@ -182,6 +275,13 @@ pub fn run_ui_with<F: FnOnce(isize)>(
             None,
         )?;
 
+        // Registered before the icon is added: if the shell restarts between the
+        // two, the broadcast still has somewhere to land.
+        TASKBAR_CREATED.store(
+            RegisterWindowMessageW(w!("TaskbarCreated")),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+
         let icon = build_icon()?;
         let mut nid = NOTIFYICONDATAW {
             cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
@@ -221,7 +321,9 @@ pub fn run_ui_with<F: FnOnce(isize)>(
                 hits: Vec::new(),
                 track: None,
                 level_track: None,
+                scale: 1.0,
                 drag: None,
+                pending_noise: None,
                 panel_visible: false,
             })
         });
@@ -258,6 +360,26 @@ fn refresh_tray(ctx: &mut Ctx) {
     }
 }
 
+/// Re-registers the notification icon after the shell restarted.
+///
+/// The previous icon was destroyed with the old taskbar, so this is `NIM_ADD`
+/// and not `NIM_MODIFY`; modifying an icon the shell no longer knows about
+/// fails silently and leaves the tray empty.
+fn readd_icon(ctx: &mut Ctx) {
+    unsafe {
+        // Delete first, ignoring failure. If the shell somehow does still hold
+        // the icon, adding a second one would leave a duplicate that no message
+        // ever reaches.
+        let _ = Shell_NotifyIconW(NIM_DELETE, &ctx.nid);
+        if Shell_NotifyIconW(NIM_ADD, &ctx.nid).as_bool() {
+            tracing::info!("re-added the tray icon after a shell restart");
+        } else {
+            tracing::error!("could not re-add the tray icon after a shell restart");
+        }
+    }
+    refresh_tray(ctx);
+}
+
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_TRAY => {
@@ -274,6 +396,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_STATE => {
             CTX.with(|c| {
                 if let Some(ctx) = c.borrow_mut().as_mut() {
+                    // The device has spoken; stop showing what was asked for.
+                    ctx.pending_noise = None;
                     refresh_tray(ctx);
                     if ctx.panel_visible {
                         redraw_panel(ctx);
@@ -328,6 +452,33 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             PostQuitMessage(0);
             LRESULT(0)
         }
+        // A second instance asked us to show ourselves rather than starting a
+        // duplicate tray.
+        WM_SHOW_PANEL => {
+            with_ctx(|ctx| {
+                if !ctx.panel_visible {
+                    toggle_panel(ctx);
+                }
+            });
+            LRESULT(0)
+        }
+        // Dragged onto a display with a different scale, or the user changed the
+        // scaling while the panel was open. Re-render at the new density.
+        WM_DPICHANGED if panel::tag(hwnd) == panel::TAG_PANEL => {
+            with_ctx(redraw_panel);
+            LRESULT(0)
+        }
+        // The shell restarted and took every tray icon with it. Re-register, and
+        // drop the panel: it was anchored to an icon that no longer exists.
+        m if m != 0 && m == TASKBAR_CREATED.load(std::sync::atomic::Ordering::Relaxed) => {
+            with_ctx(|ctx| {
+                if ctx.panel_visible {
+                    hide_panel(ctx);
+                }
+                readd_icon(ctx);
+            });
+            LRESULT(0)
+        }
         _ => DefWindowProcW(hwnd, msg, wp, lp),
     }
 }
@@ -338,8 +489,10 @@ fn redraw_panel(ctx: &mut Ctx) {
         return;
     };
     let state = ctx.state.lock().map(|s| s.clone()).unwrap_or_default();
+    let state = state.with_pending_noise(ctx.pending_noise);
     let panel = ui::build(&state, ctx.view, ctx.param, ctx.drag);
-    let img = match renderer.render(&panel, 1.0) {
+    ctx.scale = unsafe { dpi::window_scale(ctx.panel_hwnd) };
+    let img = match renderer.render(&panel, ctx.scale) {
         Ok(i) => i,
         Err(e) => {
             tracing::error!("panel render failed: {e}");
@@ -380,6 +533,7 @@ fn hide_panel(ctx: &mut Ctx) {
     unsafe { panel::hide(ctx.panel_hwnd) };
     ctx.panel_visible = false;
     ctx.drag = None;
+    ctx.pending_noise = None;
     // Always reopen on the main view; landing back in Settings is disorienting.
     ctx.view = View::Main;
 }
@@ -401,8 +555,15 @@ fn toggle_panel(ctx: &mut Ctx) {
 }
 
 fn on_panel_press(ctx: &mut Ctx, x: f32, y: f32) {
-    // Panel-local coordinates: the window includes the shadow margin.
-    let (lx, ly) = (x - crate::ui::theme::SHADOW, y - crate::ui::theme::SHADOW);
+    // Physical pixels in, logical units out: the window is sized in physical
+    // pixels but every hit region came from `ui::layout`, which works in the
+    // same logical units as the theme's metrics. The window also includes the
+    // shadow margin, which is in those logical units.
+    let s = if ctx.scale > 0.0 { ctx.scale } else { 1.0 };
+    let (lx, ly) = (
+        x / s - crate::ui::theme::SHADOW,
+        y / s - crate::ui::theme::SHADOW,
+    );
     let Some(target) = ctx
         .hits
         .iter()
@@ -498,7 +659,12 @@ fn set_noise_mode(ctx: &mut Ctx, mode: NoiseMode) {
 fn send_noise(ctx: &mut Ctx, f: impl FnOnce(NoiseControl) -> NoiseControl) {
     let current = ctx.state.lock().ok().and_then(|s| s.noise);
     let Some(current) = current else { return };
-    let _ = ctx.commands.send(Command::SetNoise(f(current)));
+    let want = f(current);
+    let _ = ctx.commands.send(Command::SetNoise(want));
+    // Show it immediately. The worker's read-back replaces it with whatever
+    // the device actually holds, including when the device refuses.
+    ctx.pending_noise = Some(want);
+    redraw_panel(ctx);
 }
 
 fn on_panel_drag(ctx: &mut Ctx, x: f32) {
@@ -506,7 +672,8 @@ fn on_panel_drag(ctx: &mut Ctx, x: f32) {
         return;
     }
     let Some(g) = ctx.track else { return };
-    let v = g.value_at(x - crate::ui::theme::SHADOW);
+    let s = if ctx.scale > 0.0 { ctx.scale } else { 1.0 };
+    let v = g.value_at(x / s - crate::ui::theme::SHADOW);
     if ctx.drag != Some(v) {
         ctx.drag = Some(v);
         redraw_panel(ctx);

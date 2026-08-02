@@ -60,6 +60,25 @@ impl HeadsetState {
         self.mic_mute_hardware = from.mic_mute_hardware;
     }
 
+    /// This state as the panel should draw it while a noise write is in flight.
+    ///
+    /// The device is still the source of truth — this does not touch `self`,
+    /// and the read-back that follows every write is what finally decides. It
+    /// exists because a write costs at least one 250 ms-paced exchange, and a
+    /// control that does not move when clicked reads as broken.
+    ///
+    /// A pending write against an unknown state is ignored: there is nothing to
+    /// preview against, and the device may refuse the write outright.
+    pub fn with_pending_noise(&self, pending: Option<NoiseControl>) -> HeadsetState {
+        let mut out = self.clone();
+        if self.noise.is_some() {
+            if let Some(p) = pending {
+                out.noise = Some(p);
+            }
+        }
+        out
+    }
+
     /// Display name for the header.
     ///
     /// Strips the trailing " HID" the descriptor carries, which is an artefact
@@ -288,6 +307,50 @@ mod tests {
         s.apply(&frame(Param::NoiseCancellation.id(), &[0x01, 0x04]));
         s.apply(&frame(Param::LinkState.id(), &[0x00, 0x00]));
         assert_eq!(s.noise, None, "a stale mode must not persist");
+    }
+
+    #[test]
+    fn a_pending_noise_write_is_shown_until_the_device_answers() {
+        use headset_protocol::{NoiseControl, NoiseMode};
+        let mut s = HeadsetState::default();
+        s.apply(&frame(Param::NoiseCancellation.id(), &[0x01, 0x03]));
+
+        let asked = NoiseControl {
+            mode: NoiseMode::Ambient,
+            anc_level: 3,
+        };
+        let shown = s.with_pending_noise(Some(asked));
+        assert_eq!(
+            shown.noise,
+            Some(asked),
+            "the panel shows what was asked for"
+        );
+        assert_eq!(
+            s.noise.map(|n| n.mode),
+            Some(NoiseMode::Anc),
+            "the device's own state is not overwritten by the request"
+        );
+    }
+
+    #[test]
+    fn no_pending_write_leaves_the_device_state_alone() {
+        let mut s = HeadsetState::default();
+        s.apply(&frame(Param::NoiseCancellation.id(), &[0x01, 0x03]));
+        assert_eq!(s.with_pending_noise(None), s);
+    }
+
+    #[test]
+    fn a_pending_write_does_not_invent_a_state_while_disconnected() {
+        use headset_protocol::{NoiseControl, NoiseMode};
+        // Nothing was ever read, so there is nothing to preview against. The
+        // panel must keep showing "--" rather than a value the device never
+        // reported and may refuse.
+        let s = HeadsetState::default();
+        let asked = NoiseControl {
+            mode: NoiseMode::Anc,
+            anc_level: 2,
+        };
+        assert_eq!(s.with_pending_noise(Some(asked)).noise, None);
     }
 
     #[test]
