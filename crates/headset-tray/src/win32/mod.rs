@@ -43,7 +43,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     TrackPopupMenu, TranslateMessage, HICON, ICONINFO, IDC_ARROW, MF_SEPARATOR, MF_STRING, MSG,
     TPM_BOTTOMALIGN, TPM_RIGHTALIGN, WINDOW_EX_STYLE, WM_ACTIVATE, WM_APP, WM_CLOSE, WM_COMMAND,
     WM_CONTEXTMENU, WM_DESTROY, WM_DPICHANGED, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
-    WNDCLASSW, WS_OVERLAPPED,
+    WM_SETTINGCHANGE, WNDCLASSW, WS_OVERLAPPED,
 };
 
 // Not part of any public API: these are the tray's own window plumbing, and
@@ -231,6 +231,7 @@ pub fn run_ui_with<F: FnOnce(isize)>(
     unsafe {
         // Before any window exists: the awareness context is fixed at first use.
         dpi::make_process_per_monitor_aware();
+        crate::ui::theme::set_high_contrast(high_contrast_enabled());
 
         // Apartment-threaded because this thread also pumps messages, which is
         // what COM's STA contract expects.
@@ -356,6 +357,28 @@ fn write_tip(nid: &mut NOTIFYICONDATAW, text: &str) {
     let wide: Vec<u16> = text.encode_utf16().take(nid.szTip.len() - 1).collect();
     nid.szTip = [0; 128];
     nid.szTip[..wide.len()].copy_from_slice(&wide);
+}
+
+/// Whether Windows is in high-contrast mode.
+fn high_contrast_enabled() -> bool {
+    use windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SystemParametersInfoW, SPI_GETHIGHCONTRAST, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    };
+
+    unsafe {
+        let mut hc = HIGHCONTRASTW {
+            cbSize: std::mem::size_of::<HIGHCONTRASTW>() as u32,
+            ..Default::default()
+        };
+        let ok = SystemParametersInfoW(
+            SPI_GETHIGHCONTRAST,
+            std::mem::size_of::<HIGHCONTRASTW>() as u32,
+            Some(&mut hc as *mut HIGHCONTRASTW as *mut std::ffi::c_void),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        );
+        ok.is_ok() && (hc.dwFlags & HCF_HIGHCONTRASTON).0 != 0
+    }
 }
 
 /// Identifies this tray icon to the shell across restarts and reinstalls.
@@ -524,6 +547,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 }
             });
             PostQuitMessage(0);
+            LRESULT(0)
+        }
+        // The user turned high contrast on or off while we were running.
+        WM_SETTINGCHANGE => {
+            crate::ui::theme::set_high_contrast(high_contrast_enabled());
+            with_ctx(|ctx| {
+                if ctx.panel_visible {
+                    redraw_panel(ctx);
+                }
+            });
             LRESULT(0)
         }
         // A second instance asked us to show ourselves rather than starting a

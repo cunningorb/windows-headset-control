@@ -358,7 +358,7 @@ pub fn build(state: &HeadsetState, view: View, param: SliderParam, preview: Opti
     b.p.push(Primitive::RoundRect {
         rect: Rect::new(0.0, 0.0, PANEL_W, 0.0),
         radius: PANEL_RADIUS,
-        fill: Some(BG_PANEL),
+        fill: Some(bg_panel()),
         stroke: None,
         stroke_w: 0.0,
     });
@@ -390,7 +390,7 @@ pub fn build(state: &HeadsetState, view: View, param: SliderParam, preview: Opti
         "Refresh",
         FS_BODY,
         W_REGULAR,
-        TEXT_MUTED,
+        text_muted(),
         Align::Left,
     );
     b.hits.push((footer, HitTarget::Refresh));
@@ -412,7 +412,11 @@ pub fn build(state: &HeadsetState, view: View, param: SliderParam, preview: Opti
 
 fn header(b: &mut Builder, state: &HeadsetState, view: View, y: &mut f32) {
     let connected = state.connected == Some(true);
-    let dot_color = if connected { ACCENT } else { TEXT_SECONDARY };
+    let dot_color = if connected {
+        accent()
+    } else {
+        text_secondary()
+    };
     b.p.push(Primitive::Circle {
         cx: MARGIN + 4.0,
         cy: *y + 11.0,
@@ -427,7 +431,7 @@ fn header(b: &mut Builder, state: &HeadsetState, view: View, y: &mut f32) {
         &state.device_name(),
         FS_TITLE,
         W_BOLD,
-        TEXT_PRIMARY,
+        text_primary(),
         Align::Left,
     );
 
@@ -439,7 +443,7 @@ fn header(b: &mut Builder, state: &HeadsetState, view: View, y: &mut f32) {
     b.caption(
         Rect::new(MARGIN + 16.0, *y + 22.0, CONTENT_W - 60.0, 14.0),
         &status,
-        TEXT_SECONDARY,
+        text_secondary(),
         Align::Left,
     );
 
@@ -450,18 +454,18 @@ fn header(b: &mut Builder, state: &HeadsetState, view: View, y: &mut f32) {
         rect: btn,
         radius: BUTTON_RADIUS,
         fill: Some(if active {
-            ACCENT.with_alpha(0x33)
+            accent().with_alpha(0x33)
         } else {
-            BG_BUTTON
+            bg_button()
         }),
-        stroke: Some(if active { ACCENT } else { BORDER_CARD }),
+        stroke: Some(if active { accent() } else { border_card() }),
         stroke_w: 1.0,
     });
     gear_icon(
         b,
         btn.x + 15.0,
         btn.center_y(),
-        if active { ACCENT } else { TEXT_MUTED },
+        if active { accent() } else { text_muted() },
     );
     b.hits.push((
         btn,
@@ -486,7 +490,7 @@ fn main_body(
 ) {
     // ---- status card -------------------------------------------------------
     let card = Rect::new(MARGIN, *y, CONTENT_W, CARD_H);
-    b.card(card, BG_CARD, BORDER_CARD);
+    b.card(card, bg_card(), border_card());
 
     let bat_y = card.y + 24.0;
     battery_icon(
@@ -494,7 +498,7 @@ fn main_body(
         card.x + 18.0,
         bat_y + 4.0,
         state.battery,
-        b.tint(TEXT_PRIMARY),
+        b.tint(text_primary()),
     );
     let pct = state
         .battery
@@ -505,22 +509,22 @@ fn main_body(
         &pct,
         FS_BATTERY,
         W_BOLD,
-        b.tint(TEXT_PRIMARY),
+        b.tint(text_primary()),
         Align::Left,
     );
     b.caption(
         Rect::new(card.x + 53.0, bat_y + 16.0, 120.0, 14.0),
         "BATTERY",
-        b.tint(TEXT_SECONDARY),
+        b.tint(text_secondary()),
         Align::Left,
     );
 
     // ---- mute pill ---------------------------------------------------------
     let muted = state.effectively_muted();
     let (pill_text, glyph_color) = match muted {
-        Some(true) => ("MUTED", STATE_MUTED),
-        Some(false) => ("LIVE", STATE_LIVE),
-        None => ("--", TEXT_SECONDARY),
+        Some(true) => ("MUTED", state_muted()),
+        Some(false) => ("LIVE", state_live()),
+        None => ("--", text_secondary()),
     };
     // Wide enough for "MUTED" at this weight. Sized to the longest label rather
     // than the shortest: at 86 px it wrapped to "MUTE / D".
@@ -530,11 +534,11 @@ fn main_body(
     b.p.push(Primitive::RoundRect {
         rect: pill,
         radius: BUTTON_RADIUS,
-        fill: Some(BG_PANEL),
+        fill: Some(bg_panel()),
         stroke: Some(if muted == Some(true) {
-            ACCENT
+            accent()
         } else {
-            BORDER_CARD
+            border_card()
         }),
         stroke_w: 1.0,
     });
@@ -550,7 +554,7 @@ fn main_body(
         pill_text,
         FS_PILL,
         W_SEMIBOLD,
-        b.tint(TEXT_PRIMARY),
+        b.tint(text_primary()),
         Align::Left,
     );
     // A hardware-muted mic cannot be released from software, so the click is
@@ -567,7 +571,7 @@ fn main_body(
             "Muted by the headset's own switch",
             FS_CAPTION,
             W_REGULAR,
-            TEXT_SECONDARY,
+            text_secondary(),
             Align::Right,
         );
         *y += 12.0;
@@ -579,16 +583,16 @@ fn main_body(
         rect: sw,
         radius: BUTTON_RADIUS,
         fill: None,
-        stroke: Some(b.tint(ACCENT)),
+        stroke: Some(b.tint(accent())),
         stroke_w: 1.5,
     });
-    swap_icon(b, sw.x + 16.0, sw.center_y(), b.tint(ACCENT));
+    swap_icon(b, sw.x + 16.0, sw.center_y(), b.tint(accent()));
     b.text(
         Rect::new(sw.x + 28.0, sw.y, sw.w - 34.0, sw.h),
         param.button_label(),
         FS_BODY,
         W_SEMIBOLD,
-        b.tint(TEXT_PRIMARY),
+        b.tint(text_primary()),
         Align::Left,
     );
     if !b.dim {
@@ -604,7 +608,7 @@ fn main_body(
         &format_value(param, value),
         FS_BODY,
         W_SEMIBOLD,
-        b.tint(ACCENT_TEXT),
+        b.tint(accent_text()),
         Align::Right,
     );
 
@@ -631,7 +635,7 @@ fn main_body(
         x1: tx1,
         y1: ty,
         w: TRACK_LINE_W,
-        color: b.tint(TRACK_INACTIVE),
+        color: b.tint(track_inactive()),
     });
     if let Some(fx) = filled_to {
         if fx > tx0 {
@@ -641,7 +645,7 @@ fn main_body(
                 x1: fx,
                 y1: ty,
                 w: TRACK_LINE_W,
-                color: b.tint(ACCENT),
+                color: b.tint(accent()),
             });
         }
     }
@@ -652,7 +656,7 @@ fn main_body(
             cx: x,
             cy: ty,
             r: DOT_R,
-            fill: Some(b.tint(if active { ACCENT } else { TRACK_INACTIVE })),
+            fill: Some(b.tint(if active { accent() } else { track_inactive() })),
             stroke: None,
             stroke_w: 0.0,
         });
@@ -664,14 +668,14 @@ fn main_body(
                 cx: kx,
                 cy: ty,
                 r: KNOB_GLOW_R,
-                color: ACCENT.with_alpha(0x55),
+                color: accent().with_alpha(0x55),
             });
         }
         b.p.push(Primitive::Circle {
             cx: kx,
             cy: ty,
             r: KNOB_R,
-            fill: Some(b.tint(ACCENT)),
+            fill: Some(b.tint(accent())),
             stroke: None,
             stroke_w: 0.0,
         });
@@ -693,9 +697,9 @@ fn main_body(
             continue;
         }
         let color = if active_idx == Some(i) {
-            ACCENT_LABEL
+            accent_label()
         } else {
-            TEXT_SECONDARY
+            text_secondary()
         };
         b.caption(
             Rect::new(MARGIN, label_y, CONTENT_W, 14.0),
@@ -711,8 +715,8 @@ fn main_body(
     // ---- warning banner ----------------------------------------------------
     if state.warn_vendor_software {
         let banner = Rect::new(MARGIN, *y, CONTENT_W, BANNER_H);
-        b.card(banner, BG_BANNER, BORDER_BANNER);
-        warning_icon(b, banner.x + 18.0, banner.center_y(), TEXT_MUTED);
+        b.card(banner, bg_banner(), border_banner());
+        warning_icon(b, banner.x + 18.0, banner.center_y(), text_muted());
         b.text(
             Rect::new(
                 banner.x + 32.0,
@@ -723,7 +727,7 @@ fn main_body(
             "Synapse is running and may override these settings.",
             FS_BODY - 1.0,
             W_REGULAR,
-            TEXT_MUTED,
+            text_muted(),
             Align::Left,
         );
         *y = banner.bottom() + GAP * 0.5;
@@ -749,7 +753,7 @@ fn noise_section(
     b.caption(
         Rect::new(MARGIN, *y, CONTENT_W, 14.0),
         "NOISE CONTROL",
-        b.tint(TEXT_SECONDARY),
+        b.tint(text_secondary()),
         Align::Left,
     );
     b.text(
@@ -757,14 +761,14 @@ fn noise_section(
         &format_noise(noise),
         FS_BODY,
         W_SEMIBOLD,
-        b.tint(ACCENT_TEXT),
+        b.tint(accent_text()),
         Align::Right,
     );
     *y += 22.0;
 
     // ---- three-segment mode row -------------------------------------------
     let row = Rect::new(MARGIN, *y, CONTENT_W, SEGMENT_H);
-    b.card(row, BG_CARD, BORDER_CARD);
+    b.card(row, bg_card(), border_card());
 
     let seg_w = CONTENT_W / 3.0;
     let segments = [
@@ -782,8 +786,8 @@ fn noise_section(
             b.p.push(Primitive::RoundRect {
                 rect: fill,
                 radius: BUTTON_RADIUS,
-                fill: Some(b.tint(ACCENT.with_alpha(0x33))),
-                stroke: Some(b.tint(ACCENT)),
+                fill: Some(b.tint(accent().with_alpha(0x33))),
+                stroke: Some(b.tint(accent())),
                 stroke_w: 1.5,
             });
         }
@@ -791,9 +795,9 @@ fn noise_section(
             Rect::new(seg.x, seg.y, seg.w, seg.h),
             label,
             b.tint(if is_active {
-                ACCENT_LABEL
+                accent_label()
             } else {
-                TEXT_SECONDARY
+                text_secondary()
             }),
             Align::Center,
         );
@@ -836,7 +840,7 @@ fn noise_section(
         x1: t.x1,
         y1: t.y,
         w: TRACK_LINE_W,
-        color: shade(TRACK_INACTIVE),
+        color: shade(track_inactive()),
     });
     if let Some(fx) = filled_to {
         if fx > t.x0 {
@@ -846,7 +850,7 @@ fn noise_section(
                 x1: fx,
                 y1: t.y,
                 w: TRACK_LINE_W,
-                color: shade(ACCENT),
+                color: shade(accent()),
             });
         }
     }
@@ -857,7 +861,7 @@ fn noise_section(
             cx: x,
             cy: t.y,
             r: DOT_R,
-            fill: Some(shade(if on { ACCENT } else { TRACK_INACTIVE })),
+            fill: Some(shade(if on { accent() } else { track_inactive() })),
             stroke: None,
             stroke_w: 0.0,
         });
@@ -869,14 +873,14 @@ fn noise_section(
                 cx: kx,
                 cy: t.y,
                 r: KNOB_GLOW_R,
-                color: ACCENT.with_alpha(0x55),
+                color: accent().with_alpha(0x55),
             });
         }
         b.p.push(Primitive::Circle {
             cx: kx,
             cy: t.y,
             r: KNOB_R,
-            fill: Some(shade(ACCENT)),
+            fill: Some(shade(accent())),
             stroke: None,
             stroke_w: 0.0,
         });
@@ -897,9 +901,9 @@ fn noise_section(
             Rect::new(MARGIN, label_y, CONTENT_W, 14.0),
             &l.to_string(),
             shade(if level == Some(l) {
-                ACCENT_LABEL
+                accent_label()
             } else {
-                TEXT_SECONDARY
+                text_secondary()
             }),
             align,
         );
@@ -911,7 +915,7 @@ fn settings_body(b: &mut Builder, _state: &HeadsetState, y: &mut f32) {
     b.caption(
         Rect::new(MARGIN, *y, CONTENT_W, 14.0),
         "SETTINGS",
-        TEXT_SECONDARY,
+        text_secondary(),
         Align::Left,
     );
     *y += 22.0;
@@ -933,13 +937,13 @@ fn settings_body(b: &mut Builder, _state: &HeadsetState, y: &mut f32) {
 
     for (title, desc, target, on) in rows {
         let card = Rect::new(MARGIN, *y, CONTENT_W, 66.0);
-        b.card(card, BG_CARD, BORDER_CARD);
+        b.card(card, bg_card(), border_card());
         b.text(
             Rect::new(card.x + 16.0, card.y + 12.0, card.w - 76.0, 18.0),
             title,
             FS_BODY + 1.0,
             W_SEMIBOLD,
-            TEXT_PRIMARY,
+            text_primary(),
             Align::Left,
         );
         // Sized to hold the longer description on one line. Text is vertically
@@ -950,7 +954,7 @@ fn settings_body(b: &mut Builder, _state: &HeadsetState, y: &mut f32) {
             desc,
             FS_DESCRIPTION,
             W_REGULAR,
-            TEXT_SECONDARY,
+            text_secondary(),
             Align::Left,
         );
         toggle(
@@ -967,17 +971,17 @@ fn settings_body(b: &mut Builder, _state: &HeadsetState, y: &mut f32) {
     b.p.push(Primitive::RoundRect {
         rect: back,
         radius: BUTTON_RADIUS,
-        fill: Some(BG_CARD),
-        stroke: Some(BORDER_CARD),
+        fill: Some(bg_card()),
+        stroke: Some(border_card()),
         stroke_w: 1.0,
     });
-    back_icon(b, back.x + 18.0, back.center_y(), TEXT_PRIMARY);
+    back_icon(b, back.x + 18.0, back.center_y(), text_primary());
     b.text(
         Rect::new(back.x + 30.0, back.y, back.w - 34.0, back.h),
         "Back",
         FS_BODY,
         W_SEMIBOLD,
-        TEXT_PRIMARY,
+        text_primary(),
         Align::Left,
     );
     b.hits.push((back, HitTarget::Back));
@@ -989,9 +993,9 @@ fn toggle(b: &mut Builder, r: Rect, on: bool) {
         rect: r,
         radius: r.h / 2.0,
         fill: Some(if on {
-            ACCENT.with_alpha(0xAA)
+            accent().with_alpha(0xAA)
         } else {
-            TRACK_INACTIVE
+            track_inactive()
         }),
         stroke: None,
         stroke_w: 0.0,
@@ -1005,7 +1009,7 @@ fn toggle(b: &mut Builder, r: Rect, on: bool) {
         cx: knob_x,
         cy: r.center_y(),
         r: r.h / 2.0 - 3.0,
-        fill: Some(if on { TEXT_PRIMARY } else { TEXT_SECONDARY }),
+        fill: Some(if on { text_primary() } else { text_secondary() }),
         stroke: None,
         stroke_w: 0.0,
     });
@@ -1105,7 +1109,7 @@ fn battery_icon(b: &mut Builder, cx: f32, cy: f32, pct: Option<u8>, c: Color) {
         b.p.push(Primitive::RoundRect {
             rect: Rect::new(body.x + 2.5, body.y + 2.5, w, body.h - 5.0),
             radius: 1.6,
-            fill: Some(ACCENT),
+            fill: Some(accent()),
             stroke: None,
             stroke_w: 0.0,
         });
@@ -1162,7 +1166,7 @@ fn warning_icon(b: &mut Builder, cx: f32, cy: f32, c: Color) {
 }
 
 fn refresh_icon(b: &mut Builder, cx: f32, cy: f32) {
-    let c = TEXT_MUTED;
+    let c = text_muted();
     b.p.push(Primitive::Path {
         points: vec![
             (cx + 6.0, cy - 1.0),

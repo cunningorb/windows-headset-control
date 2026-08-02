@@ -77,6 +77,9 @@ windows = { version = "0.58", features = [
     # /MANIFEST:EMBED, so the process opts in at runtime through
     # SetProcessDpiAwarenessContext instead.
     "Win32_UI_HiDpi",
+    # High contrast detection, so the panel does not keep drawing its own
+    # low-contrast greys at users who chose high contrast to escape them.
+    "Win32_UI_Accessibility",
 ] }
 
 [profile.release]
