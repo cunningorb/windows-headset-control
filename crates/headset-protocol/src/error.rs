@@ -7,4 +7,29 @@ pub enum ProtocolError {
 
     #[error("expected report id {expected:#04x}, got {actual:#04x}")]
     UnexpectedReportId { expected: u8, actual: u8 },
+
+    #[error(
+        "parameter {param:#04x} is not in the observed {} allowlist; \
+         only identifiers seen on the wire may be sent",
+        if *write { "write" } else { "read" }
+    )]
+    NotAllowlisted { param: u8, write: bool },
+
+    #[error("parameter {param:#04x} does not take an index operand")]
+    UnexpectedIndex { param: u8 },
+
+    #[error("payload of {actual} bytes exceeds the {max} that fit before the checksum")]
+    PayloadTooLong { max: usize, actual: usize },
+
+    #[error("checksum mismatch: computed {expected:#04x}, frame carries {actual:#04x}")]
+    ChecksumMismatch { expected: u8, actual: u8 },
+
+    #[error("implausible data_size {data_size}")]
+    ImplausibleDataSize { data_size: usize },
+
+    #[error("payload length disagreement: byte 12 declares {declared}, data_size implies {implied}")]
+    LengthDisagreement { declared: u8, implied: usize },
+
+    #[error("unknown role byte {role:#04x}")]
+    UnknownRole { role: u8 },
 }
