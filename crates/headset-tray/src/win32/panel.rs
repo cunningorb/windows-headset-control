@@ -188,6 +188,43 @@ pub unsafe fn anchor(owner: HWND, icon_id: u32, w: i32, h: i32) -> (i32, i32) {
     (x, y)
 }
 
+/// Repositions an already-placed panel for a new height, holding its **bottom**
+/// edge still.
+///
+/// The panel is anchored above the tray icon, so its bottom edge is the one the
+/// user's eye is on and the one the taskbar constrains. Holding the top instead
+/// makes a panel that changes height — switching to Settings, the Synapse
+/// banner appearing, the noise section — grow downward over the taskbar and
+/// shrink away from it, which reads as the panel sliding around on its own.
+///
+/// Clamped to the work area so a panel taller than the space above the icon
+/// runs off neither end.
+pub unsafe fn reanchor_bottom(hwnd: HWND, h: i32) -> (i32, i32) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowRect, SystemParametersInfoW, SPI_GETWORKAREA, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    };
+
+    let mut r = RECT::default();
+    let _ = GetWindowRect(hwnd, &mut r);
+
+    let mut work = RECT::default();
+    let _ = SystemParametersInfoW(
+        SPI_GETWORKAREA,
+        0,
+        Some(&mut work as *mut RECT as *mut std::ffi::c_void),
+        SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+    );
+
+    let mut y = r.bottom - h;
+    if y + h > work.bottom {
+        y = work.bottom - h;
+    }
+    if y < work.top {
+        y = work.top;
+    }
+    (r.left, y)
+}
+
 /// Stashes a pointer on the window so the shared wndproc can tell which window
 /// a message belongs to without a second thread-local.
 pub unsafe fn set_tag(hwnd: HWND, tag: isize) {

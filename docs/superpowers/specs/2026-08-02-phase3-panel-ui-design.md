@@ -237,3 +237,40 @@ every write replaces it with what the device actually reports.
 - The `RESERVED` card. Dropped until something fills it; the two indexed parameters
   (`0x15`, `0x60`) are the likely EQ table, and identifying them is separate work.
 - Any change to the protocol, device, or CLI crates.
+
+## Addendum: noise control (2026-08-02, after this spec was approved)
+
+The `RESERVED` slot above has been filled. Parameter `0x12` was identified after this
+spec was written (see `docs/device-research.md`), and the panel gained a noise-control
+block between the slider and the warning banner:
+
+```
+  NOISE CONTROL                                ANC 3
+  ┌──────────┬──────────┬──────────┐
+  │   OFF    │   ANC    │ AMBIENT  │   active segment filled with accent
+  └──────────┴──────────┴──────────┘
+  ●───────●───────◉───────●
+  1                       4
+```
+
+Four things about it are decisions rather than sampling, since the mockups predate the
+parameter and have nothing to copy:
+
+- **Three segments, not a toggle plus a switcher.** The device holds one mode byte with
+  three observed values, so one control with three regions maps to it exactly and reaches
+  any state in one click.
+- **The level row is always drawn, and only hit-tests in ANC.** Hiding it would change the
+  panel's height when the mode changes and make it jump — the same reasoning the
+  disconnected state uses. The retained level stays visible in every named mode, because
+  the device really does keep it and land on it when ANC returns.
+- **The ends are labelled `1` and `4`, not `LOW` and `HIGH`.** Nothing observed establishes
+  which end is the stronger cancellation. The numbers are the vendor UI's own.
+- **`SEGMENT_H` is not a sampled metric.** It matches `SWITCHER_H`, and says so in
+  `theme.rs`.
+
+New hit targets: `NoiseOff`, `NoiseAnc`, `NoiseAmbient`, `NoiseLevel`. Clicking any of
+them is a read-modify-write composed from the state the panel is showing, because mode and
+level go out together; nothing is sent while that state is unknown.
+
+This addendum also supersedes "Any change to the protocol, device, or CLI crates" for the
+noise work, which added `headset-protocol::noise` and a `headsetctl noise` command.

@@ -4,8 +4,15 @@
 //! value-to-position mapping and its inverse, and every clickable region can be
 //! tested without a GPU. `render` walks the primitive list and decides nothing.
 
+use headset_protocol::{NoiseControl, NoiseMode, ANC_LEVEL_RANGE};
+
 use crate::state::HeadsetState;
 use crate::ui::theme::*;
+
+/// The ANC level bounds come from the protocol crate rather than being restated
+/// here, so the panel cannot offer a level the encoder would refuse to send.
+const ANC_MIN: u8 = ANC_LEVEL_RANGE.0;
+const ANC_MAX: u8 = ANC_LEVEL_RANGE.1;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rect {
@@ -103,6 +110,12 @@ pub enum HitTarget {
     Refresh,
     ToggleStartup,
     ToggleWarning,
+    /// The three segments of the noise-mode row, in drawn order.
+    NoiseOff,
+    NoiseAnc,
+    NoiseAmbient,
+    /// The ANC level track. Only present while the mode is ANC.
+    NoiseLevel,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -201,6 +214,8 @@ pub struct Panel {
     pub height: f32,
     /// Track geometry, retained so drag handling can map x back to a value.
     pub track: Option<TrackGeometry>,
+    /// ANC level track, present only while the mode is ANC.
+    pub level_track: Option<LevelTrack>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -209,6 +224,56 @@ pub struct TrackGeometry {
     pub x1: f32,
     pub y: f32,
     pub param: SliderParam,
+}
+
+/// The ANC level track: four positions, numbered as the vendor UI numbers them.
+///
+/// Deliberately a separate type from [`TrackGeometry`], because its values start
+/// at 1 rather than 0 and nothing establishes which end is the stronger — the
+/// ends are labelled `1` and `4`, not `LOW` and `HIGH`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LevelTrack {
+    pub x0: f32,
+    pub x1: f32,
+    pub y: f32,
+}
+
+impl LevelTrack {
+    pub fn x_for(&self, level: u8) -> f32 {
+        let t = (level.clamp(ANC_MIN, ANC_MAX) - ANC_MIN) as f32 / (ANC_MAX - ANC_MIN) as f32;
+        self.x0 + (self.x1 - self.x0) * t
+    }
+    /// Nearest level to a pointer position, clamped to the observed four.
+    pub fn level_at(&self, px: f32) -> u8 {
+        let span = (ANC_MAX - ANC_MIN) as f32;
+        let t = ((px - self.x0) / (self.x1 - self.x0)).clamp(0.0, 1.0);
+        ANC_MIN + (t * span).round() as u8
+    }
+}
+
+/// Which segment of the noise row is active, or `None` when the device's mode
+/// is unknown or is a byte this project has no evidence for.
+pub fn active_noise_segment(noise: Option<NoiseControl>) -> Option<usize> {
+    match noise?.mode {
+        NoiseMode::Off => Some(0),
+        NoiseMode::Anc => Some(1),
+        NoiseMode::Ambient => Some(2),
+        NoiseMode::Unrecognised(_) => None,
+    }
+}
+
+/// The noise state as the panel words it.
+pub fn format_noise(noise: Option<NoiseControl>) -> String {
+    let Some(n) = noise else {
+        return "--".to_string();
+    };
+    match n.mode {
+        NoiseMode::Off => "Off".to_string(),
+        NoiseMode::Anc => format!("ANC {}", n.anc_level),
+        // No level: the captures show ambient ignoring byte 1.
+        NoiseMode::Ambient => "Ambient".to_string(),
+        NoiseMode::Unrecognised(_) => "--".to_string(),
+    }
 }
 
 impl TrackGeometry {
@@ -302,8 +367,17 @@ pub fn build(state: &HeadsetState, view: View, param: SliderParam, preview: Opti
     header(&mut b, state, view, &mut y);
 
     let mut track = None;
+    let mut level_track = None;
     match view {
-        View::Main => main_body(&mut b, state, param, preview, &mut y, &mut track),
+        View::Main => main_body(
+            &mut b,
+            state,
+            param,
+            preview,
+            &mut y,
+            &mut track,
+            &mut level_track,
+        ),
         View::Settings => settings_body(&mut b, state, &mut y),
     }
 
@@ -332,6 +406,7 @@ pub fn build(state: &HeadsetState, view: View, param: SliderParam, preview: Opti
         hits: b.hits,
         height,
         track,
+        level_track,
     }
 }
 
@@ -407,6 +482,7 @@ fn main_body(
     preview: Option<u8>,
     y: &mut f32,
     track: &mut Option<TrackGeometry>,
+    level_track: &mut Option<LevelTrack>,
 ) {
     // ---- status card -------------------------------------------------------
     let card = Rect::new(MARGIN, *y, CONTENT_W, CARD_H);
@@ -630,6 +706,8 @@ fn main_body(
     }
     *y = label_y + 18.0 + GAP;
 
+    noise_section(b, state, y, level_track);
+
     // ---- warning banner ----------------------------------------------------
     if state.warn_vendor_software {
         let banner = Rect::new(MARGIN, *y, CONTENT_W, BANNER_H);
@@ -650,6 +728,183 @@ fn main_body(
         );
         *y = banner.bottom() + GAP * 0.5;
     }
+}
+
+/// The noise-control block: a caption row, a three-segment mode row, and the
+/// ANC level track.
+///
+/// The level track is drawn in every mode but only hit-tests in ANC, so
+/// switching modes does not change the panel's height and make it jump. That is
+/// the same reasoning the disconnected state uses.
+fn noise_section(
+    b: &mut Builder,
+    state: &HeadsetState,
+    y: &mut f32,
+    level_track: &mut Option<LevelTrack>,
+) {
+    let noise = state.noise;
+    let active = active_noise_segment(noise);
+
+    // ---- caption + current state ------------------------------------------
+    b.caption(
+        Rect::new(MARGIN, *y, CONTENT_W, 14.0),
+        "NOISE CONTROL",
+        b.tint(TEXT_SECONDARY),
+        Align::Left,
+    );
+    b.text(
+        Rect::new(MARGIN, *y - 3.0, CONTENT_W, 16.0),
+        &format_noise(noise),
+        FS_BODY,
+        W_SEMIBOLD,
+        b.tint(ACCENT_TEXT),
+        Align::Right,
+    );
+    *y += 22.0;
+
+    // ---- three-segment mode row -------------------------------------------
+    let row = Rect::new(MARGIN, *y, CONTENT_W, SEGMENT_H);
+    b.card(row, BG_CARD, BORDER_CARD);
+
+    let seg_w = CONTENT_W / 3.0;
+    let segments = [
+        ("OFF", HitTarget::NoiseOff),
+        ("ANC", HitTarget::NoiseAnc),
+        ("AMBIENT", HitTarget::NoiseAmbient),
+    ];
+    for (i, (label, target)) in segments.into_iter().enumerate() {
+        let seg = Rect::new(row.x + seg_w * i as f32, row.y, seg_w, row.h);
+        let is_active = active == Some(i);
+        if is_active {
+            // Inset so the fill sits inside the container's border rather than
+            // doubling it.
+            let fill = Rect::new(seg.x + 2.0, seg.y + 2.0, seg.w - 4.0, seg.h - 4.0);
+            b.p.push(Primitive::RoundRect {
+                rect: fill,
+                radius: BUTTON_RADIUS,
+                fill: Some(b.tint(ACCENT.with_alpha(0x33))),
+                stroke: Some(b.tint(ACCENT)),
+                stroke_w: 1.5,
+            });
+        }
+        b.caption(
+            Rect::new(seg.x, seg.y, seg.w, seg.h),
+            label,
+            b.tint(if is_active {
+                ACCENT_LABEL
+            } else {
+                TEXT_SECONDARY
+            }),
+            Align::Center,
+        );
+        if !b.dim {
+            b.hits.push((seg, target));
+        }
+    }
+    *y = row.bottom() + 20.0;
+
+    // ---- ANC level track ---------------------------------------------------
+    // Live only in ANC. In any other mode the level is retained by the device
+    // but does nothing, so it is shown dimmed rather than hidden or removed.
+    let live = noise.map(|n| n.mode == NoiseMode::Anc).unwrap_or(false) && !b.dim;
+    let shade = |c: Color| {
+        if live {
+            c
+        } else {
+            c.with_alpha(DISABLED_ALPHA)
+        }
+    };
+
+    let t = LevelTrack {
+        x0: MARGIN + 1.0,
+        x1: MARGIN + CONTENT_W - 1.0,
+        y: *y,
+    };
+    // Drawn in every named mode, not just ANC: the device retains byte 1 while
+    // off and while in ambient, and lands on it when ANC comes back. Hiding it
+    // would claim the level is unknown while the device is reporting it. An
+    // unrecognised mode byte gets nothing, because byte 1's meaning is only
+    // established alongside the three modes that were observed.
+    let level = noise
+        .filter(|n| active_noise_segment(Some(*n)).is_some())
+        .map(|n| n.anc_level);
+    let filled_to = level.map(|l| t.x_for(l));
+
+    b.p.push(Primitive::Line {
+        x0: t.x0,
+        y0: t.y,
+        x1: t.x1,
+        y1: t.y,
+        w: TRACK_LINE_W,
+        color: shade(TRACK_INACTIVE),
+    });
+    if let Some(fx) = filled_to {
+        if fx > t.x0 {
+            b.p.push(Primitive::Line {
+                x0: t.x0,
+                y0: t.y,
+                x1: fx,
+                y1: t.y,
+                w: TRACK_LINE_W,
+                color: shade(ACCENT),
+            });
+        }
+    }
+    for l in ANC_MIN..=ANC_MAX {
+        let x = t.x_for(l);
+        let on = filled_to.map(|fx| x <= fx + 0.5).unwrap_or(false);
+        b.p.push(Primitive::Circle {
+            cx: x,
+            cy: t.y,
+            r: DOT_R,
+            fill: Some(shade(if on { ACCENT } else { TRACK_INACTIVE })),
+            stroke: None,
+            stroke_w: 0.0,
+        });
+    }
+    if let Some(l) = level {
+        let kx = t.x_for(l);
+        if live {
+            b.p.push(Primitive::Glow {
+                cx: kx,
+                cy: t.y,
+                r: KNOB_GLOW_R,
+                color: ACCENT.with_alpha(0x55),
+            });
+        }
+        b.p.push(Primitive::Circle {
+            cx: kx,
+            cy: t.y,
+            r: KNOB_R,
+            fill: Some(shade(ACCENT)),
+            stroke: None,
+            stroke_w: 0.0,
+        });
+    }
+    if live {
+        b.hits.push((
+            Rect::new(MARGIN, t.y - 14.0, CONTENT_W, 28.0),
+            HitTarget::NoiseLevel,
+        ));
+        *level_track = Some(t);
+    }
+
+    // End labels are the vendor UI's own numbers. Nothing observed establishes
+    // which end is the stronger cancellation, so they are not labelled LOW/HIGH.
+    let label_y = t.y + 14.0;
+    for (l, align) in [(ANC_MIN, Align::Left), (ANC_MAX, Align::Right)] {
+        b.caption(
+            Rect::new(MARGIN, label_y, CONTENT_W, 14.0),
+            &l.to_string(),
+            shade(if level == Some(l) {
+                ACCENT_LABEL
+            } else {
+                TEXT_SECONDARY
+            }),
+            align,
+        );
+    }
+    *y = label_y + 18.0 + GAP;
 }
 
 fn settings_body(b: &mut Builder, _state: &HeadsetState, y: &mut f32) {
@@ -965,6 +1220,10 @@ mod tests {
             battery: Some(49),
             sidetone: Some(0),
             game_chat: Some(10),
+            noise: Some(NoiseControl {
+                mode: NoiseMode::Anc,
+                anc_level: 3,
+            }),
             mic_mute_hardware: Some(false),
             mic_mute_os: Some(false),
             warn_vendor_software: true,
@@ -1035,6 +1294,219 @@ mod tests {
     fn an_unknown_value_never_renders_as_a_number() {
         assert_eq!(format_value(SliderParam::Sidetone, None), "--");
         assert_eq!(format_value(SliderParam::GameChat, None), "--");
+    }
+
+    fn in_mode(mode: NoiseMode, anc_level: u8) -> HeadsetState {
+        HeadsetState {
+            noise: Some(NoiseControl { mode, anc_level }),
+            ..connected()
+        }
+    }
+
+    fn targets(p: &Panel) -> Vec<HitTarget> {
+        p.hits.iter().map(|(_, t)| *t).collect()
+    }
+
+    #[test]
+    fn the_noise_row_offers_all_three_modes_as_separate_regions() {
+        let p = build(&connected(), View::Main, SliderParam::GameChat, None);
+        let segs: Vec<Rect> = [
+            HitTarget::NoiseOff,
+            HitTarget::NoiseAnc,
+            HitTarget::NoiseAmbient,
+        ]
+        .iter()
+        .map(|want| {
+            p.hits
+                .iter()
+                .find(|(_, t)| t == want)
+                .unwrap_or_else(|| panic!("{want:?} is not reachable"))
+                .0
+        })
+        .collect();
+
+        // Left to right, touching but never overlapping, spanning the content.
+        assert!(segs[0].right() <= segs[1].x, "off overlaps anc");
+        assert!(segs[1].right() <= segs[2].x, "anc overlaps ambient");
+        assert!((segs[0].x - MARGIN).abs() < 1.0);
+        assert!((segs[2].right() - (MARGIN + CONTENT_W)).abs() < 1.0);
+    }
+
+    #[test]
+    fn the_active_segment_follows_the_device_mode() {
+        let at = |m| {
+            active_noise_segment(Some(NoiseControl {
+                mode: m,
+                anc_level: 3,
+            }))
+        };
+        assert_eq!(at(NoiseMode::Off), Some(0));
+        assert_eq!(at(NoiseMode::Anc), Some(1));
+        assert_eq!(at(NoiseMode::Ambient), Some(2));
+        // A mode byte we have no evidence for must not light a segment that
+        // claims the device is in a state we cannot name.
+        assert_eq!(at(NoiseMode::Unrecognised(0x02)), None);
+        assert_eq!(active_noise_segment(None), None);
+    }
+
+    #[test]
+    fn the_level_track_is_interactive_only_in_anc_mode() {
+        let anc = build(
+            &in_mode(NoiseMode::Anc, 3),
+            View::Main,
+            SliderParam::GameChat,
+            None,
+        );
+        assert!(targets(&anc).contains(&HitTarget::NoiseLevel));
+        assert!(anc.level_track.is_some());
+
+        for mode in [
+            NoiseMode::Off,
+            NoiseMode::Ambient,
+            NoiseMode::Unrecognised(2),
+        ] {
+            let p = build(&in_mode(mode, 3), View::Main, SliderParam::GameChat, None);
+            assert!(
+                !targets(&p).contains(&HitTarget::NoiseLevel),
+                "{mode:?} has no level to set"
+            );
+        }
+    }
+
+    #[test]
+    fn level_positions_round_trip_at_every_step() {
+        let t = LevelTrack {
+            x0: 18.0,
+            x1: 324.0,
+            y: 0.0,
+        };
+        for level in 1..=4u8 {
+            assert_eq!(t.level_at(t.x_for(level)), level, "level {level}");
+        }
+    }
+
+    #[test]
+    fn a_click_between_dots_snaps_to_the_nearest_level() {
+        // The common case: the track is 4 dots wide and a click almost never
+        // lands exactly on one. Truncating instead of rounding would bias every
+        // click downward, which a round-trip over exact tick positions cannot
+        // detect.
+        let t = LevelTrack {
+            x0: 0.0,
+            x1: 300.0,
+            y: 0.0,
+        };
+        // Dots are 100 px apart on this track.
+        assert_eq!(t.level_at(t.x_for(2) + 60.0), 3, "60% of the way to 3");
+        assert_eq!(t.level_at(t.x_for(2) + 40.0), 2, "40% of the way to 3");
+        assert_eq!(t.level_at(t.x_for(3) - 60.0), 2);
+    }
+
+    #[test]
+    fn level_positions_clamp_to_the_observed_four() {
+        let t = LevelTrack {
+            x0: 18.0,
+            x1: 324.0,
+            y: 0.0,
+        };
+        assert_eq!(t.level_at(-500.0), 1);
+        assert_eq!(t.level_at(9999.0), 4);
+    }
+
+    #[test]
+    fn noise_text_never_claims_more_than_was_observed() {
+        let at = |m, l| {
+            format_noise(Some(NoiseControl {
+                mode: m,
+                anc_level: l,
+            }))
+        };
+        assert_eq!(at(NoiseMode::Off, 4), "Off");
+        assert_eq!(at(NoiseMode::Anc, 3), "ANC 3");
+        // Ambient has no level, so naming one here would state a fact the
+        // captures contradict.
+        assert_eq!(at(NoiseMode::Ambient, 4), "Ambient");
+        assert_eq!(at(NoiseMode::Unrecognised(0x02), 4), "--");
+        assert_eq!(format_noise(None), "--");
+    }
+
+    /// x of the knob on the level row. Scoped by row, because the game/chat
+    /// slider's knob has the same radius and would otherwise be picked up.
+    fn knob_x(p: &Panel, row_y: f32) -> Option<f32> {
+        p.primitives.iter().find_map(|prim| match prim {
+            Primitive::Circle { cx, cy, r, .. }
+                if (*r - KNOB_R).abs() < 0.01 && (*cy - row_y).abs() < 0.01 =>
+            {
+                Some(*cx)
+            }
+            _ => None,
+        })
+    }
+
+    /// The level row's y, taken from the one mode that exposes its geometry.
+    /// The section is laid out identically in every mode by design, which is
+    /// what stops the panel jumping when the mode changes.
+    fn level_row_y() -> f32 {
+        build(
+            &in_mode(NoiseMode::Anc, 2),
+            View::Main,
+            SliderParam::GameChat,
+            None,
+        )
+        .level_track
+        .expect("anc exposes the track")
+        .y
+    }
+
+    #[test]
+    fn the_retained_level_stays_visible_in_every_mode() {
+        // The device keeps byte 1 while off and while in ambient, and lands on
+        // it when ANC comes back. Hiding it would make the panel claim the
+        // level is unknown when the device is telling us exactly what it is.
+        let anc = build(
+            &in_mode(NoiseMode::Anc, 2),
+            View::Main,
+            SliderParam::GameChat,
+            None,
+        );
+        let want = anc.level_track.unwrap().x_for(2);
+        let row = level_row_y();
+
+        for mode in [NoiseMode::Off, NoiseMode::Ambient] {
+            let p = build(&in_mode(mode, 2), View::Main, SliderParam::GameChat, None);
+            let x = knob_x(&p, row).unwrap_or_else(|| panic!("{mode:?} drew no level knob"));
+            assert!((x - want).abs() < 0.01, "{mode:?} knob at {x}, want {want}");
+        }
+    }
+
+    #[test]
+    fn an_unrecognised_mode_draws_no_level_at_all() {
+        // Byte 1's meaning is only established for the three observed modes.
+        let p = build(
+            &in_mode(NoiseMode::Unrecognised(0x02), 2),
+            View::Main,
+            SliderParam::GameChat,
+            None,
+        );
+        assert_eq!(knob_x(&p, level_row_y()), None);
+    }
+
+    #[test]
+    fn a_disconnected_headset_offers_no_noise_controls() {
+        let off = HeadsetState {
+            connected: Some(false),
+            noise: None,
+            ..connected()
+        };
+        let p = build(&off, View::Main, SliderParam::GameChat, None);
+        for t in [
+            HitTarget::NoiseOff,
+            HitTarget::NoiseAnc,
+            HitTarget::NoiseAmbient,
+            HitTarget::NoiseLevel,
+        ] {
+            assert!(!targets(&p).contains(&t), "{t:?} must not hit-test");
+        }
     }
 
     #[test]

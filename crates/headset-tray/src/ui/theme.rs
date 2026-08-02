@@ -86,6 +86,11 @@ pub const BANNER_H: f32 = 49.0;
 pub const SWITCHER_W: f32 = 125.0;
 pub const SWITCHER_H: f32 = 36.0;
 
+/// Noise-mode segment row. Not in the mockups — they predate the parameter
+/// being identified — so this matches the switcher's height rather than being
+/// sampled, which is the only honest thing to say about it.
+pub const SEGMENT_H: f32 = 36.0;
+
 /// Slider dots, measured ~5 px across.
 pub const DOT_R: f32 = 2.5;
 /// Knob radius, measured ~5 px, plus a soft glow beyond it.

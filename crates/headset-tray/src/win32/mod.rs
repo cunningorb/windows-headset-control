@@ -52,6 +52,7 @@ pub(crate) mod panel;
 use crate::state::HeadsetState;
 use crate::ui::{self, HitTarget, SliderParam, View};
 use crate::worker::Command;
+use headset_protocol::{NoiseControl, NoiseMode};
 
 /// Tray icon callback.
 const WM_TRAY: u32 = WM_APP + 1;
@@ -84,6 +85,8 @@ struct Ctx {
     /// what is actually on screen rather than a freshly computed guess.
     hits: Vec<(crate::ui::layout::Rect, crate::ui::HitTarget)>,
     track: Option<crate::ui::layout::TrackGeometry>,
+    /// ANC level track from the last render. `None` in every mode but ANC.
+    level_track: Option<crate::ui::layout::LevelTrack>,
     /// Value being dragged. Shown instead of the device's value until release,
     /// which is what makes one write per adjustment rather than twenty.
     drag: Option<u8>,
@@ -217,6 +220,7 @@ pub fn run_ui_with<F: FnOnce(isize)>(
                 param: SliderParam::GameChat,
                 hits: Vec::new(),
                 track: None,
+                level_track: None,
                 drag: None,
                 panel_visible: false,
             })
@@ -346,6 +350,7 @@ fn redraw_panel(ctx: &mut Ctx) {
     // against the drawn layout rather than a recomputed one.
     ctx.hits = panel.hits.clone();
     ctx.track = panel.track;
+    ctx.level_track = panel.level_track;
 
     let first_show = !ctx.panel_visible;
     unsafe {
@@ -359,9 +364,9 @@ fn redraw_panel(ctx: &mut Ctx) {
         } else {
             // Keep the panel where it is across repaints; re-anchoring to the
             // cursor would make it walk around the screen as values update.
-            let mut r = windows::Win32::Foundation::RECT::default();
-            let _ = windows::Win32::UI::WindowsAndMessaging::GetWindowRect(ctx.panel_hwnd, &mut r);
-            (r.left, r.top)
+            // Held by the bottom edge, because that is the edge sitting just
+            // above the tray icon and a repaint can change the height.
+            panel::reanchor_bottom(ctx.panel_hwnd, img.height as i32)
         };
         if let Err(e) = panel::show(ctx.panel_hwnd, x, y, &img, first_show) {
             tracing::error!("showing the panel failed: {e}");
@@ -444,6 +449,17 @@ fn on_panel_press(ctx: &mut Ctx, x: f32, y: f32) {
                 redraw_panel(ctx);
             }
         }
+        HitTarget::NoiseOff => set_noise_mode(ctx, NoiseMode::Off),
+        HitTarget::NoiseAnc => set_noise_mode(ctx, NoiseMode::Anc),
+        HitTarget::NoiseAmbient => set_noise_mode(ctx, NoiseMode::Ambient),
+        HitTarget::NoiseLevel => {
+            if let Some(t) = ctx.level_track {
+                send_noise(ctx, |n| NoiseControl {
+                    anc_level: t.level_at(lx),
+                    ..n
+                });
+            }
+        }
         HitTarget::ToggleStartup => {
             let target_exe = crate::install::installed_exe()
                 .filter(|p| p.exists())
@@ -464,6 +480,25 @@ fn on_panel_press(ctx: &mut Ctx, x: f32, y: f32) {
             }
         }
     }
+}
+
+fn set_noise_mode(ctx: &mut Ctx, mode: NoiseMode) {
+    send_noise(ctx, |n| NoiseControl { mode, ..n });
+}
+
+/// Read-modify-write, on the UI side of the wire.
+///
+/// The device holds mode and level in one two-byte parameter, so a change to
+/// either has to carry the other. `f` is handed the state the panel is
+/// currently showing and returns the whole thing.
+///
+/// Nothing is sent when the current state is unknown: composing a write would
+/// mean inventing the byte we did not read, and the panel does not hit-test the
+/// noise row while the headset is unreachable anyway.
+fn send_noise(ctx: &mut Ctx, f: impl FnOnce(NoiseControl) -> NoiseControl) {
+    let current = ctx.state.lock().ok().and_then(|s| s.noise);
+    let Some(current) = current else { return };
+    let _ = ctx.commands.send(Command::SetNoise(f(current)));
 }
 
 fn on_panel_drag(ctx: &mut Ctx, x: f32) {

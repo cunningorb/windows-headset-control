@@ -5,7 +5,7 @@
 //! That is the whole point of the device-is-source-of-truth rule: a value we
 //! have not read, or that the device refused, must not render as a number.
 
-use headset_protocol::{Param, ParamFrame};
+use headset_protocol::{NoiseControl, Param, ParamFrame};
 
 /// The refusal byte. A named parameter answering with it means "unavailable",
 /// not the value 255.
@@ -25,6 +25,9 @@ pub struct HeadsetState {
     pub battery: Option<u8>,
     pub sidetone: Option<u8>,
     pub game_chat: Option<u8>,
+    /// Noise-control mode and ANC level, which the device holds as one
+    /// two-byte parameter and which are therefore never separately known.
+    pub noise: Option<NoiseControl>,
     /// The headset's hardware mute switch.
     pub mic_mute_hardware: Option<bool>,
     /// The Windows capture endpoint's mute, which is a separate state.
@@ -53,6 +56,7 @@ impl HeadsetState {
         self.battery = from.battery;
         self.sidetone = from.sidetone;
         self.game_chat = from.game_chat;
+        self.noise = from.noise;
         self.mic_mute_hardware = from.mic_mute_hardware;
     }
 
@@ -92,6 +96,7 @@ impl HeadsetState {
                     self.battery = None;
                     self.sidetone = None;
                     self.game_chat = None;
+                    self.noise = None;
                     self.mic_mute_hardware = None;
                 }
             }
@@ -99,6 +104,11 @@ impl HeadsetState {
             id if id == Param::Sidetone.id() => self.sidetone = value,
             id if id == Param::GameChatBalance.id() => self.game_chat = value,
             id if id == Param::MicMute.id() => self.mic_mute_hardware = value.map(|v| v != 0),
+            // Both bytes or nothing: a refusal is one byte and decodes to
+            // `None`, which is the same "unknown" every other field uses.
+            id if id == Param::NoiseCancellation.id() => {
+                self.noise = NoiseControl::from_payload(&frame.payload)
+            }
             // Parameters with no established meaning are ignored rather than
             // guessed at. The tray shows only what the research record supports.
             _ => {}
@@ -232,6 +242,7 @@ mod tests {
 
         assert_eq!(ui.battery, Some(54), "device fields must update");
         assert_eq!(ui.connected, Some(true));
+        assert_eq!(ui.noise, from_worker.noise, "noise is the worker's to own");
         assert!(
             !ui.warn_vendor_software,
             "the user turned the warning off; a device refresh must not turn it back on"
@@ -251,6 +262,32 @@ mod tests {
         };
         assert_eq!(s.device_name(), "BlackShark V3 Pro PS");
         assert_eq!(HeadsetState::default().device_name(), "Headset");
+    }
+
+    #[test]
+    fn the_noise_state_comes_from_both_payload_bytes() {
+        use headset_protocol::NoiseMode;
+        let mut s = HeadsetState::default();
+        s.apply(&frame(Param::NoiseCancellation.id(), &[0x01, 0x03]));
+        let n = s.noise.expect("a two-byte payload is a noise state");
+        assert_eq!(n.mode, NoiseMode::Anc);
+        assert_eq!(n.anc_level, 3);
+    }
+
+    #[test]
+    fn a_refused_noise_read_leaves_it_unknown() {
+        let mut s = HeadsetState::default();
+        s.apply(&frame(Param::NoiseCancellation.id(), &[0x01, 0x03]));
+        s.apply(&frame(Param::NoiseCancellation.id(), &[0xFF]));
+        assert_eq!(s.noise, None, "a refusal is not a noise state");
+    }
+
+    #[test]
+    fn losing_the_link_clears_the_noise_state_too() {
+        let mut s = HeadsetState::default();
+        s.apply(&frame(Param::NoiseCancellation.id(), &[0x01, 0x04]));
+        s.apply(&frame(Param::LinkState.id(), &[0x00, 0x00]));
+        assert_eq!(s.noise, None, "a stale mode must not persist");
     }
 
     #[test]

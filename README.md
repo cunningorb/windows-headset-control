@@ -43,8 +43,10 @@ contradicted.
 
 ## The tray
 
-`headset-tray.exe` shows battery, microphone mute state, and submenus for sidetone (0–15)
-and game/chat balance (0–20).
+`headset-tray.exe` shows battery, microphone mute state, sliders for sidetone (0–15) and
+game/chat balance (0–20), and noise control: off, ANC, or ambient, with an ANC level of
+1–4. The level track is live only in ANC — ambient has no level — but stays visible in the
+other modes, because the headset retains the level and returns to it.
 
 State is never cached authoritatively: a value the device refuses shows as unknown rather
 than as a number, and losing the wireless link clears the readings instead of leaving
@@ -63,6 +65,7 @@ default).
 | `list`, `inspect`, `probe`, `watch` | no |
 | `get <name>` | sends a read request |
 | `set <name> <value>` | yes |
+| `noise` | reads; writes only when given `--mode` or `--level` |
 | `param get/set <id>` | yes, allowlisted identifiers only |
 
 ```
@@ -70,6 +73,12 @@ default).
 battery: 49
 > headsetctl set sidetone 7
 sidetone: 7
+> headsetctl noise
+noise-cancellation: anc level 4
+> headsetctl noise --level 2        # keeps the current mode
+noise-cancellation: anc level 2
+> headsetctl noise --mode ambient   # ambient has no level; the ANC level is retained
+noise-cancellation: ambient (anc level 2)
 > headsetctl param get 0x2c        # observed but unidentified; no meaning is claimed
 0x2c: 0f
 ```
