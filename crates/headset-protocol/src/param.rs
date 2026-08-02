@@ -647,6 +647,25 @@ mod tests {
     }
 
     #[test]
+    fn the_number_of_observed_but_unnamed_parameters_is_pinned() {
+        // The README states this count in prose, and `docs/device-research.md`
+        // lists them by identifier. It was wrong for exactly as long as it took
+        // to identify 0x12 and not notice. Identifying another parameter should
+        // fail here, which is the prompt to update both documents.
+        let named = READ_ALLOWLIST
+            .iter()
+            .filter(|id| Param::ALL.iter().any(|p| p.id() == **id))
+            .count();
+        let unnamed = READ_ALLOWLIST.len() - named;
+        assert_eq!(
+            unnamed, 10,
+            "the count of unnamed readable parameters changed; update README.md \
+             and the 'Reads observed whose meaning is unknown' list in \
+             docs/device-research.md to match"
+        );
+    }
+
+    #[test]
     fn named_parameters_are_all_readable() {
         for p in Param::ALL {
             assert!(
