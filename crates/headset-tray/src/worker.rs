@@ -13,7 +13,9 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::Duration;
 
 use headset_device::{ControlSession, DeviceError, HidBackend};
-use headset_protocol::{encode_read, encode_write, Param, ResultCode};
+use headset_protocol::{
+    encode_noise_write, encode_read, encode_write, NoiseControl, Param, ResultCode,
+};
 
 use crate::state::HeadsetState;
 
@@ -35,6 +37,9 @@ const FULL_REFRESH: Duration = Duration::from_secs(60);
 pub enum Command {
     SetSidetone(u8),
     SetGameChat(u8),
+    /// Both bytes of parameter `0x12`. Never one: the device holds mode and
+    /// level together, so the caller composes the whole state.
+    SetNoise(NoiseControl),
     Refresh,
     Shutdown,
 }
@@ -172,6 +177,7 @@ fn refresh_all(s: &mut ControlSession, state: &mut HeadsetState) -> Result<(), D
         Param::Sidetone,
         Param::GameChatBalance,
         Param::MicMute,
+        Param::NoiseCancellation,
     ] {
         read_into(s, p, state)?;
     }
@@ -202,6 +208,16 @@ fn apply(
             reject_unless_ok(&ack)?;
             read_into(s, Param::GameChatBalance, state)
         }
+        Command::SetNoise(want) => {
+            // No preamble was ever observed for this parameter, unlike
+            // sidetone's 0x18. The vendor software's read before the write is
+            // the UI's job here: it composed `want` from the state it holds.
+            let req = encode_noise_write(want)
+                .map_err(|e| DeviceError::ProtocolMismatch(e.to_string()))?;
+            let ack = s.exchange(&req, Param::NoiseCancellation.id(), true)?;
+            reject_unless_ok(&ack)?;
+            read_into(s, Param::NoiseCancellation, state)
+        }
     }
 }
 
@@ -223,7 +239,7 @@ fn reject_unless_ok(ack: &headset_protocol::ParamFrame) -> Result<(), DeviceErro
 mod tests {
     use super::*;
     use headset_device::{resolve_control_device, FakeHidBackend};
-    use headset_protocol::{checksum, CONTROL_REPORT_LEN};
+    use headset_protocol::{checksum, NoiseMode, CONTROL_REPORT_LEN};
     use std::sync::mpsc;
 
     const FIXTURE: &str =
@@ -288,6 +304,7 @@ mod tests {
             response(Param::Sidetone.id(), false, &[7]),
             response(Param::GameChatBalance.id(), false, &[10]),
             response(Param::MicMute.id(), false, &[1]),
+            response(Param::NoiseCancellation.id(), false, &[0x01, 0x03]),
         ] {
             b.push_read(&info.id, r);
         }
@@ -300,6 +317,59 @@ mod tests {
         assert_eq!(last.game_chat, Some(10));
         assert_eq!(last.mic_mute_hardware, Some(true));
         assert_eq!(last.effectively_muted(), Some(true));
+        assert_eq!(
+            last.noise,
+            Some(NoiseControl {
+                mode: NoiseMode::Anc,
+                anc_level: 3
+            })
+        );
+    }
+
+    #[test]
+    fn setting_noise_writes_both_bytes_and_reads_back() {
+        let mut b = FakeHidBackend::from_fixture_str(FIXTURE).unwrap();
+        let info = resolve_control_device(&b).unwrap();
+        // Link read short-circuits the rest of the refresh, so the only
+        // exchanges after it are the write and its read-back.
+        for r in [
+            response(Param::LinkState.id(), false, &[0x00, 0x00]),
+            response(Param::NoiseCancellation.id(), true, &[0x00]),
+            response(Param::NoiseCancellation.id(), false, &[0x50, 0x03]),
+        ] {
+            b.push_read(&info.id, r);
+        }
+
+        let (tx, rx) = mpsc::channel();
+        tx.send(Command::SetNoise(NoiseControl {
+            mode: NoiseMode::Ambient,
+            anc_level: 3,
+        }))
+        .unwrap();
+        tx.send(Command::Shutdown).unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        run(&b, rx, move |s| sink.lock().unwrap().push(s));
+        let states = seen.lock().unwrap().clone();
+
+        let writes = b.writes();
+        let cmd = writes
+            .iter()
+            .find(|w| w[10] == 0x92)
+            .expect("a noise write must reach the wire");
+        assert_eq!(cmd[12], 2, "both bytes go out together");
+        // Ambient carries the byte the vendor software was observed sending,
+        // not the retained level.
+        assert_eq!(&cmd[13..15], &[0x50, 0x01]);
+
+        assert_eq!(
+            states.last().unwrap().noise,
+            Some(NoiseControl {
+                mode: NoiseMode::Ambient,
+                anc_level: 3
+            }),
+            "the state must come from the read-back, not from what was asked"
+        );
     }
 
     #[test]
@@ -312,6 +382,7 @@ mod tests {
             response(Param::Sidetone.id(), false, &[0xFF]),
             response(Param::GameChatBalance.id(), false, &[0xFF]),
             response(Param::MicMute.id(), false, &[0xFF]),
+            response(Param::NoiseCancellation.id(), false, &[0xFF]),
         ] {
             b.push_read(&info.id, r);
         }
@@ -320,6 +391,7 @@ mod tests {
         let last = states.last().unwrap();
         assert_eq!(last.battery, None);
         assert_eq!(last.sidetone, None);
+        assert_eq!(last.noise, None);
         assert!(!last.tooltip().contains("255"), "{}", last.tooltip());
     }
 }

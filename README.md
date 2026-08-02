@@ -43,8 +43,10 @@ contradicted.
 
 ## The tray
 
-`headset-tray.exe` shows battery, microphone mute state, and submenus for sidetone (0–15)
-and game/chat balance (0–20).
+`headset-tray.exe` shows battery, microphone mute state, sliders for sidetone (0–15) and
+game/chat balance (0–20), and noise control: off, ANC, or ambient, with an ANC level of
+1–4. The level track is live only in ANC — ambient has no level — but stays visible in the
+other modes, because the headset retains the level and returns to it.
 
 State is never cached authoritatively: a value the device refuses shows as unknown rather
 than as a number, and losing the wireless link clears the readings instead of leaving

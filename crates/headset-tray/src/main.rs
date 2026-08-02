@@ -97,6 +97,7 @@ fn run_uninstall() {
 /// below. With no states, renders all of them.
 #[cfg(windows)]
 fn run_render_panel() {
+    use headset_protocol::{NoiseControl, NoiseMode};
     use headset_tray::state::HeadsetState;
     use headset_tray::ui::{self, layout::SliderParam, View};
     use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
@@ -111,6 +112,10 @@ fn run_render_panel() {
         battery: Some(49),
         sidetone: Some(0),
         game_chat: Some(10),
+        noise: Some(NoiseControl {
+            mode: NoiseMode::Anc,
+            anc_level: 3,
+        }),
         mic_mute_hardware: Some(false),
         mic_mute_os: Some(false),
         warn_vendor_software: true,
@@ -162,11 +167,30 @@ fn run_render_panel() {
         SliderParam::GameChat,
     ));
 
+    // The three noise modes, so the segment row and the dimmed level track can
+    // be diffed the same way every other state is.
+    for (name, mode) in [
+        ("live-noise-off", NoiseMode::Off),
+        ("live-noise-ambient", NoiseMode::Ambient),
+    ] {
+        let mut s = base.clone();
+        s.noise = Some(NoiseControl { mode, anc_level: 3 });
+        cases.push((name, s, View::Main, SliderParam::GameChat));
+    }
+
+    let mut anc1 = base.clone();
+    anc1.noise = Some(NoiseControl {
+        mode: NoiseMode::Anc,
+        anc_level: 1,
+    });
+    cases.push(("live-noise-anc-1", anc1, View::Main, SliderParam::GameChat));
+
     let mut off = base.clone();
     off.connected = Some(false);
     off.battery = None;
     off.sidetone = None;
     off.game_chat = None;
+    off.noise = None;
     off.mic_mute_hardware = None;
     cases.push(("disconnected", off, View::Main, SliderParam::GameChat));
 
