@@ -12,7 +12,11 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
 publish = false
-license = "UNLICENSED"
+# No `license` key: this is a private, proprietary, unpublished workspace
+# (`publish = false` above). "UNLICENSED" is an npm/package.json convention,
+# not a valid SPDX license expression, so it does not belong in `license`.
+# Omitting the key entirely is the conventional way to say "proprietary" in
+# a Cargo manifest.
 
 [workspace.dependencies]
 anyhow = "1"
@@ -25,7 +29,16 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 insta = { version = "1", features = ["json"] }
 
-# Pinned to 0.58 deliberately. See Global Constraints.
+# Pinned to 0.58 deliberately. See Global Constraints. `windows` 0.59+ uses
+# `raw-dylib` linkage, which requires `dlltool.exe`; this environment's
+# `x86_64-pc-windows-gnu` toolchain does not have one. For the same reason,
+# `Cargo.lock`'s precise pins for `windows-sys`, `windows-targets`, and
+# `console` (an `insta` dev-dependency transitively pulling in `getrandom`),
+# plus `.cargo/config.toml`'s `getrandom_backend = "windows_legacy"` setting,
+# all exist to keep the whole dependency tree off `raw-dylib` on this target.
+# A routine `cargo update` that bumps any of those past the pinned version
+# reintroduces the `dlltool.exe` requirement and breaks the build; don't
+# "clean up" these pins without re-checking that constraint first.
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Security",

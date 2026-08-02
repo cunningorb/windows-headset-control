@@ -227,7 +227,6 @@ dependencies = [
  "headset-device",
  "headset-protocol",
  "insta",
- "serde",
  "serde_json",
  "sha2",
  "tracing",
@@ -238,7 +237,6 @@ dependencies = [
 name = "headset-device"
 version = "0.1.0"
 dependencies = [
- "headset-protocol",
  "serde",
  "serde_json",
  "thiserror",
