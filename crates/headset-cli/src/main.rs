@@ -23,6 +23,10 @@ fn main() -> Result<()> {
         cli::Command::List(a) => cmd::list::run(&backend, a, &r, args.json)?,
         cli::Command::Inspect(a) => cmd::inspect::run(&backend, a, &r, args.json)?,
         cli::Command::Probe(a) => cmd::probe::run(&backend, a, &r, args.json)?,
+        cli::Command::Get(a) => cmd::params::run_get(&backend, a, args.json)?,
+        cli::Command::Set(a) => cmd::params::run_set(&backend, a, args.json)?,
+        cli::Command::Param(a) => cmd::params::run_param(&backend, a, args.json)?,
+        cli::Command::Watch(a) => cmd::params::run_watch(&backend, a, args.json)?,
     };
     print!("{out}");
     Ok(())

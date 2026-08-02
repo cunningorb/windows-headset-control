@@ -59,7 +59,7 @@ impl HidBackend for WindowsHidBackend {
             .find(|c| c.id == *id)
             .ok_or(DeviceError::DongleNotFound)?;
 
-        if mode == OpenMode::ReadWrite && info.is_audio_stack_collection() {
+        if mode.performs_io() && info.is_audio_stack_collection() {
             return Err(DeviceError::RefusedAudioCollection);
         }
 
@@ -68,11 +68,25 @@ impl HidBackend for WindowsHidBackend {
                 let h = ffi::open_for_descriptors(info.id.raw())?;
                 Ok(Box::new(DescriptorHandle::new(h, info.input_report_len)))
             }
-            OpenMode::ReadWrite => {
-                // Phase 1 grants read access only, never write access, even for
-                // OpenMode::ReadWrite. Write access arrives with the write phase.
+            OpenMode::Read => {
                 let h = ffi::open_for_read(info.id.raw())?;
                 Ok(Box::new(WindowsTransport::new(h, info.input_report_len)))
+            }
+            OpenMode::ReadWrite => {
+                // A collection with no output report cannot be written to; say
+                // so here rather than letting the write fail later with a
+                // Windows error that does not name the cause.
+                if info.output_report_len == 0 {
+                    return Err(DeviceError::UnexpectedControlShape(
+                        "collection declares no output report".into(),
+                    ));
+                }
+                let h = ffi::open_for_read_write(info.id.raw())?;
+                Ok(Box::new(WindowsTransport::new_writable(
+                    h,
+                    info.input_report_len,
+                    info.output_report_len,
+                )))
             }
         }
     }

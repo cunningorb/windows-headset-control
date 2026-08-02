@@ -143,7 +143,9 @@ pub fn run(
     // Bound the listen window so a silent device cannot hang the process.
     let timeout = Duration::from_millis(args.listen_ms.clamp(100, 30_000));
 
-    let transport = backend.open(&target.id, OpenMode::ReadWrite)?;
+    // `Read`, not `ReadWrite`: probe's read-only contract is now enforced by the
+    // access rights Windows granted, not merely by this code not calling write.
+    let transport = backend.open(&target.id, OpenMode::Read)?;
     let declared = transport.input_report_len() as usize;
     if declared == 0 || declared > 1024 {
         bail!("collection declares an implausible input report length of {declared}");

@@ -35,6 +35,15 @@ pub enum DeviceError {
     #[error("refusing to open the audio-stack collection for I/O")]
     RefusedAudioCollection,
 
+    #[error("this transport was not opened for writing")]
+    WriteNotSupported,
+
+    #[error(
+        "the control collection does not have the descriptor shape this protocol was \
+         derived from ({0}); refusing to write to a device whose framing may differ"
+    )]
+    UnexpectedControlShape(String),
+
     #[error("windows error: {0}")]
     Os(String),
 }

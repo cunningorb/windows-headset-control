@@ -41,6 +41,86 @@ pub enum Command {
     Inspect(InspectArgs),
     /// Read-only protocol probe. Performs no HID writes.
     Probe(ProbeArgs),
+    /// Read one named parameter from the headset.
+    Get(GetArgs),
+    /// Write one named parameter to the headset.
+    Set(SetArgs),
+    /// Read or write a parameter by its raw identifier.
+    Param(ParamArgs),
+    /// Print decoded events as the headset pushes them.
+    Watch(WatchArgs),
+}
+
+/// Accepts `0x21`, `21`, and `0X21`. Always hexadecimal, matching how parameter
+/// identifiers are written in `docs/device-research.md`.
+pub fn parse_u8_id(s: &str) -> Result<u8, String> {
+    let t = s.trim();
+    let body = t
+        .strip_prefix("0x")
+        .or_else(|| t.strip_prefix("0X"))
+        .unwrap_or(t);
+    if body.is_empty() || !body.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!("`{s}` is not a hexadecimal parameter id"));
+    }
+    u8::from_str_radix(body, 16).map_err(|_| format!("`{s}` does not fit in 8 bits"))
+}
+
+/// A parameter value. Decimal, because these are magnitudes a user reasons
+/// about (sidetone 7, balance 10), not identifiers.
+pub fn parse_value(s: &str) -> Result<u8, String> {
+    s.trim()
+        .parse::<u8>()
+        .map_err(|_| format!("`{s}` is not a value between 0 and 255"))
+}
+
+#[derive(Args, Debug)]
+pub struct GetArgs {
+    /// One of: battery, sidetone, game-chat, mic-mute, slider-function, link.
+    pub name: String,
+}
+
+#[derive(Args, Debug)]
+pub struct SetArgs {
+    /// One of: sidetone, game-chat, slider-function.
+    pub name: String,
+
+    /// The value to write.
+    #[arg(value_parser = parse_value)]
+    pub value: u8,
+}
+
+#[derive(Args, Debug)]
+pub struct ParamArgs {
+    #[command(subcommand)]
+    pub action: ParamAction,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ParamAction {
+    /// Read a raw parameter id from the observed read allowlist.
+    Get {
+        #[arg(value_parser = parse_u8_id)]
+        id: u8,
+
+        /// Index operand, for the parameters observed to take one.
+        #[arg(long)]
+        index: Option<u8>,
+    },
+    /// Write a raw parameter id from the observed write allowlist.
+    Set {
+        #[arg(value_parser = parse_u8_id)]
+        id: u8,
+
+        #[arg(value_parser = parse_value)]
+        value: u8,
+    },
+}
+
+#[derive(Args, Debug)]
+pub struct WatchArgs {
+    /// How long to listen, in seconds.
+    #[arg(long, default_value_t = 30)]
+    pub seconds: u64,
 }
 
 #[derive(Args, Debug)]

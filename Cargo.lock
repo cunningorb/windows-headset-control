@@ -237,6 +237,7 @@ dependencies = [
 name = "headset-device"
 version = "0.1.0"
 dependencies = [
+ "headset-protocol",
  "serde",
  "serde_json",
  "thiserror",
@@ -255,6 +256,13 @@ dependencies = [
 [[package]]
 name = "headset-tray"
 version = "0.1.0"
+dependencies = [
+ "headset-device",
+ "headset-protocol",
+ "tracing",
+ "tracing-subscriber",
+ "windows",
+]
 
 [[package]]
 name = "heck"

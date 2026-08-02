@@ -6,6 +6,9 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+# One-way: the device layer builds on the pure protocol crate. The reverse
+# dependency stays forbidden so `headset-protocol` keeps zero OS access.
+headset-protocol = { path = "../headset-protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

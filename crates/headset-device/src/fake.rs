@@ -47,6 +47,9 @@ pub struct FakeHidBackend {
     collections: Vec<CollectionInfo>,
     /// Input reports handed out by `read_report`, in order, per device path.
     canned_reads: Vec<(String, Vec<u8>)>,
+    /// Shared with every transport this backend hands out, so a test can assert
+    /// on what reached the wire after the transport has been dropped.
+    writes: WriteLog,
 }
 
 impl FakeHidBackend {
@@ -99,19 +102,33 @@ impl FakeHidBackend {
         Ok(Self {
             collections,
             canned_reads: Vec::new(),
+            writes: WriteLog::default(),
         })
     }
 
     /// Queues an input report to be returned by `read_report` for one device.
+    ///
+    /// Reports are returned in the order queued, which is how a test scripts an
+    /// event arriving before the response it is waiting for.
     pub fn push_read(&mut self, id: &DeviceId, report: Vec<u8>) {
         self.canned_reads.push((id.raw().to_string(), report));
     }
+
+    /// Every report written through a transport this backend handed out.
+    pub fn writes(&self) -> Vec<Vec<u8>> {
+        self.writes.lock().expect("writes log poisoned").clone()
+    }
 }
+
+type WriteLog = std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>;
 
 struct FakeTransport {
     input_report_len: u16,
+    output_report_len: u16,
+    writable: bool,
     reports: Vec<Vec<u8>>,
     cursor: std::cell::Cell<usize>,
+    writes: WriteLog,
 }
 
 impl HidTransport for FakeTransport {
@@ -135,6 +152,28 @@ impl HidTransport for FakeTransport {
     fn input_report_len(&self) -> u16 {
         self.input_report_len
     }
+
+    fn write_report(&self, buf: &[u8]) -> Result<(), DeviceError> {
+        if !self.writable {
+            return Err(DeviceError::WriteNotSupported);
+        }
+        if buf.len() != self.output_report_len as usize {
+            return Err(DeviceError::UnexpectedDescriptor(format!(
+                "write buffer is {} bytes; the collection declares an output report of {}",
+                buf.len(),
+                self.output_report_len
+            )));
+        }
+        self.writes
+            .lock()
+            .expect("writes log poisoned")
+            .push(buf.to_vec());
+        Ok(())
+    }
+
+    fn output_report_len(&self) -> u16 {
+        self.output_report_len
+    }
 }
 
 impl HidBackend for FakeHidBackend {
@@ -149,8 +188,13 @@ impl HidBackend for FakeHidBackend {
             .find(|c| c.id == *id)
             .ok_or(DeviceError::DongleNotFound)?;
 
-        if mode == OpenMode::ReadWrite && c.is_audio_stack_collection() {
+        if mode.performs_io() && c.is_audio_stack_collection() {
             return Err(DeviceError::RefusedAudioCollection);
+        }
+        if mode == OpenMode::ReadWrite && c.output_report_len == 0 {
+            return Err(DeviceError::UnexpectedControlShape(
+                "collection declares no output report".into(),
+            ));
         }
 
         let reports = self
@@ -162,8 +206,14 @@ impl HidBackend for FakeHidBackend {
 
         Ok(Box::new(FakeTransport {
             input_report_len: c.input_report_len,
+            output_report_len: c.output_report_len,
+            // Mirrors the real backend: writability follows the access the
+            // handle was opened with, so a test cannot write through a
+            // read-only open any more than production code can.
+            writable: mode == OpenMode::ReadWrite,
             reports,
             cursor: std::cell::Cell::new(0),
+            writes: self.writes.clone(),
         }))
     }
 }

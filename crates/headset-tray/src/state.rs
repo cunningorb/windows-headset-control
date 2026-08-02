@@ -1,0 +1,178 @@
+//! The tray's view of the headset. Safe Rust; no OS access.
+//!
+//! Nothing here is cached authoritatively. Every field is `Option`, and
+//! `Unknown` is a first-class state rather than a zero standing in for one.
+//! That is the whole point of the device-is-source-of-truth rule: a value we
+//! have not read, or that the device refused, must not render as a number.
+
+use headset_protocol::{Param, ParamFrame};
+
+/// The refusal byte. A named parameter answering with it means "unavailable",
+/// not the value 255.
+const REFUSED: u8 = 0xFF;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HeadsetState {
+    /// `None` until the link parameter has been read at least once.
+    pub connected: Option<bool>,
+    pub battery: Option<u8>,
+    pub sidetone: Option<u8>,
+    pub game_chat: Option<u8>,
+    /// The headset's hardware mute switch.
+    pub mic_mute_hardware: Option<bool>,
+    /// The Windows capture endpoint's mute, which is a separate state.
+    pub mic_mute_os: Option<bool>,
+    /// Whether Razer's engine is running and may contend for settings.
+    pub vendor_software_running: bool,
+}
+
+impl HeadsetState {
+    /// Audio is silenced if either mute is set, so the tray reports the union.
+    /// Reporting only one of them would tell the user their mic is live when it
+    /// is not.
+    pub fn effectively_muted(&self) -> Option<bool> {
+        match (self.mic_mute_hardware, self.mic_mute_os) {
+            (None, None) => None,
+            (a, b) => Some(a.unwrap_or(false) || b.unwrap_or(false)),
+        }
+    }
+
+    /// Folds one decoded frame into the state.
+    ///
+    /// Applies to responses and events alike: both carry the same parameter and
+    /// payload, and the tray does not care which prompted the update.
+    pub fn apply(&mut self, frame: &ParamFrame) {
+        let value = frame.value().filter(|v| *v != REFUSED);
+        match frame.param {
+            id if id == Param::LinkState.id() => {
+                self.connected = Some(frame.payload.first() == Some(&0x01));
+                // A dropped link invalidates everything proxied through it.
+                // Leaving stale numbers on screen would be worse than a gap.
+                if self.connected == Some(false) {
+                    self.battery = None;
+                    self.sidetone = None;
+                    self.game_chat = None;
+                    self.mic_mute_hardware = None;
+                }
+            }
+            id if id == Param::Battery.id() => self.battery = value,
+            id if id == Param::Sidetone.id() => self.sidetone = value,
+            id if id == Param::GameChatBalance.id() => self.game_chat = value,
+            id if id == Param::MicMute.id() => self.mic_mute_hardware = value.map(|v| v != 0),
+            // Parameters with no established meaning are ignored rather than
+            // guessed at. The tray shows only what the research record supports.
+            _ => {}
+        }
+    }
+
+    /// Tooltip text. Kept under the 127-character limit Windows imposes on
+    /// `NOTIFYICONDATAW::szTip`.
+    pub fn tooltip(&self) -> String {
+        let mut s = String::from("BlackShark V3 Pro");
+        match (self.connected, self.battery) {
+            (Some(false), _) => s.push_str(" - off"),
+            (_, Some(b)) => s.push_str(&format!(" - battery {b}%")),
+            (_, None) => s.push_str(" - battery unknown"),
+        }
+        if self.effectively_muted() == Some(true) {
+            s.push_str(" - mic muted");
+        }
+        if self.vendor_software_running {
+            s.push_str("\nSynapse is running and may change settings");
+        }
+        s
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use headset_protocol::Role;
+
+    fn frame(param: u8, payload: &[u8]) -> ParamFrame {
+        ParamFrame {
+            param,
+            is_write: false,
+            role: Role::Response,
+            payload: payload.to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_refused_value_leaves_the_field_unknown() {
+        let mut s = HeadsetState::default();
+        s.apply(&frame(Param::Battery.id(), &[0xFF]));
+        assert_eq!(s.battery, None, "255 is not a battery level");
+    }
+
+    #[test]
+    fn losing_the_link_clears_proxied_values() {
+        let mut s = HeadsetState::default();
+        s.apply(&frame(Param::Battery.id(), &[52]));
+        s.apply(&frame(Param::Sidetone.id(), &[7]));
+        s.apply(&frame(Param::LinkState.id(), &[0x00, 0x00]));
+        assert_eq!(s.connected, Some(false));
+        assert_eq!(s.battery, None, "a stale battery reading must not persist");
+        assert_eq!(s.sidetone, None);
+    }
+
+    #[test]
+    fn regaining_the_link_does_not_invent_values() {
+        let mut s = HeadsetState::default();
+        s.apply(&frame(Param::LinkState.id(), &[0x01, 0x00]));
+        assert_eq!(s.connected, Some(true));
+        assert_eq!(s.battery, None, "connected is not the same as known");
+    }
+
+    #[test]
+    fn either_mute_source_counts_as_muted() {
+        let mut s = HeadsetState::default();
+        assert_eq!(s.effectively_muted(), None);
+
+        s.mic_mute_hardware = Some(false);
+        s.mic_mute_os = Some(false);
+        assert_eq!(s.effectively_muted(), Some(false));
+
+        s.mic_mute_os = Some(true);
+        assert_eq!(s.effectively_muted(), Some(true), "OS mute silences audio");
+
+        s.mic_mute_os = Some(false);
+        s.mic_mute_hardware = Some(true);
+        assert_eq!(
+            s.effectively_muted(),
+            Some(true),
+            "the hardware switch silences audio too"
+        );
+    }
+
+    #[test]
+    fn tooltip_says_off_rather_than_showing_a_stale_battery() {
+        let mut s = HeadsetState {
+            battery: Some(52),
+            ..Default::default()
+        };
+        s.apply(&frame(Param::LinkState.id(), &[0x00, 0x00]));
+        let t = s.tooltip();
+        assert!(t.contains("off"), "{t}");
+        assert!(!t.contains("52"), "{t}");
+    }
+
+    #[test]
+    fn tooltip_stays_within_the_windows_limit() {
+        let s = HeadsetState {
+            connected: Some(true),
+            battery: Some(100),
+            mic_mute_hardware: Some(true),
+            vendor_software_running: true,
+            ..Default::default()
+        };
+        assert!(s.tooltip().chars().count() < 128, "{}", s.tooltip());
+    }
+
+    #[test]
+    fn unidentified_parameters_are_ignored() {
+        let mut s = HeadsetState::default();
+        s.apply(&frame(0x2C, &[0x0F]));
+        assert_eq!(s, HeadsetState::default());
+    }
+}

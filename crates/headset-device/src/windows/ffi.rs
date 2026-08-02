@@ -16,9 +16,10 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{
 };
 use windows::Win32::Devices::HumanInterfaceDevice::{
     HidD_FreePreparsedData, HidD_GetAttributes, HidD_GetHidGuid, HidD_GetManufacturerString,
-    HidD_GetPreparsedData, HidD_GetProductString, HidD_GetSerialNumberString, HidP_Feature,
-    HidP_GetButtonCaps, HidP_GetCaps, HidP_GetValueCaps, HidP_Input, HidP_Output, HIDD_ATTRIBUTES,
-    HIDP_BUTTON_CAPS, HIDP_CAPS, HIDP_REPORT_TYPE, HIDP_VALUE_CAPS, PHIDP_PREPARSED_DATA,
+    HidD_GetPreparsedData, HidD_GetProductString, HidD_GetSerialNumberString, HidD_SetOutputReport,
+    HidP_Feature, HidP_GetButtonCaps, HidP_GetCaps, HidP_GetValueCaps, HidP_Input, HidP_Output,
+    HIDD_ATTRIBUTES, HIDP_BUTTON_CAPS, HIDP_CAPS, HIDP_REPORT_TYPE, HIDP_VALUE_CAPS,
+    PHIDP_PREPARSED_DATA,
 };
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_BUSY, ERROR_IO_PENDING,
@@ -26,7 +27,7 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, ReadFile, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    FILE_GENERIC_WRITE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 use windows::Win32::System::IO::{CancelIo, GetOverlappedResult, OVERLAPPED};
@@ -320,6 +321,55 @@ pub fn open_for_read(path: &str) -> Result<HANDLE, DeviceError> {
             None,
         )
         .map_err(map_win_error)
+    }
+}
+
+/// Opens a collection for reading and writing.
+///
+/// Granted only to the control session, after the descriptor-shape gate.
+pub fn open_for_read_write(path: &str) -> Result<HANDLE, DeviceError> {
+    unsafe {
+        let mut wide: Vec<u16> = path.encode_utf16().collect();
+        wide.push(0);
+        CreateFileW(
+            PCWSTR(wide.as_ptr()),
+            FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAG_OVERLAPPED,
+            None,
+        )
+        .map_err(map_win_error)
+    }
+}
+
+/// Sends one output report with `HidD_SetOutputReport`.
+///
+/// This is a control-pipe SET_REPORT, which is the transfer the vendor software
+/// was observed using — not a write to an interrupt OUT endpoint. See the
+/// Transport correction in `docs/device-research.md`.
+///
+/// `buf[0]` must be the report ID. The call is synchronous and never leaves I/O
+/// pending on the handle, so it needs none of the cancel-and-synchronize
+/// machinery `read_with_timeout` requires.
+pub fn write_output_report(handle: HANDLE, buf: &[u8]) -> Result<(), DeviceError> {
+    // `HidD_SetOutputReport` takes a mutable pointer although it only reads the
+    // buffer. Copy so callers can pass a shared slice rather than being forced
+    // to hand over a mutable one they may not own.
+    let mut owned = buf.to_vec();
+    unsafe {
+        if HidD_SetOutputReport(
+            handle,
+            owned.as_mut_ptr() as *mut c_void,
+            owned.len() as u32,
+        )
+        .as_bool()
+        {
+            Ok(())
+        } else {
+            Err(map_win_error(windows::core::Error::from_win32()))
+        }
     }
 }
 

@@ -53,7 +53,7 @@ fn read_times_out_cleanly_when_device_is_silent() {
     let all = backend.enumerate().unwrap();
     let target = all.iter().find(|c| c.usage_page == 0xFF14).unwrap();
     let t = backend
-        .open(&target.id, OpenMode::ReadWrite)
+        .open(&target.id, OpenMode::Read)
         .expect("read open succeeds");
     let mut buf = vec![0u8; t.input_report_len() as usize];
     let window = Duration::from_millis(500);
