@@ -50,7 +50,15 @@ pub unsafe fn create(instance: windows::Win32::Foundation::HMODULE) -> windows::
 ///
 /// Position is the window's top-left in screen coordinates; the caller is
 /// responsible for having clamped it to a monitor's work area.
-pub unsafe fn show(hwnd: HWND, x: i32, y: i32, img: &RenderedPanel) -> windows::core::Result<()> {
+/// `activate` should be true only when opening. Re-activating on every repaint
+/// would steal focus each time the worker reports a new battery reading.
+pub unsafe fn show(
+    hwnd: HWND,
+    x: i32,
+    y: i32,
+    img: &RenderedPanel,
+    activate: bool,
+) -> windows::core::Result<()> {
     let screen = GetDC(None);
     let mem = CreateCompatibleDC(screen);
 
@@ -109,8 +117,11 @@ pub unsafe fn show(hwnd: HWND, x: i32, y: i32, img: &RenderedPanel) -> windows::
 
     let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     let _ = SetWindowPos(hwnd, HWND_TOPMOST, x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
-    // Foreground so a click elsewhere deactivates us and the panel can close.
-    let _ = windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(hwnd);
+    if activate {
+        // Foreground so that clicking elsewhere deactivates us and the panel
+        // can close itself.
+        let _ = windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(hwnd);
+    }
     Ok(())
 }
 

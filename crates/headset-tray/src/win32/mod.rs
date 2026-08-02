@@ -94,6 +94,30 @@ thread_local! {
     static CTX: RefCell<Option<Ctx>> = const { RefCell::new(None) };
 }
 
+/// Runs `f` with the tray context, or does nothing if we are already inside a
+/// handler that holds it.
+///
+/// This guard is not optional. `ShowWindow`, `SetForegroundWindow` and
+/// `UpdateLayeredWindow` dispatch messages **synchronously**, so a handler that
+/// calls them re-enters this window procedure before returning. Holding a
+/// `RefCell` borrow across that is a double-borrow panic, and with
+/// `panic = "abort"` the process dies on the spot — which looks from outside
+/// like the panel opening and then freezing, because a layered window's pixels
+/// outlive the process that drew them.
+///
+/// Skipping the nested call is the correct behaviour, not a workaround: the
+/// outer call is already mutating the same state, and the message that provoked
+/// the re-entry was caused by us rather than by the user.
+fn with_ctx<R>(f: impl FnOnce(&mut Ctx) -> R) -> Option<R> {
+    CTX.with(|c| match c.try_borrow_mut() {
+        Ok(mut guard) => guard.as_mut().map(f),
+        Err(_) => {
+            tracing::debug!("ignoring a re-entrant window message");
+            None
+        }
+    })
+}
+
 /// Runs the tray UI on the calling thread until the user exits.
 ///
 /// Blocks. `state` is shared with the worker thread, which posts [`WM_STATE`]
@@ -227,19 +251,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_TRAY => {
             let click = lp.0 as u32;
             if click == WM_LBUTTONUP {
-                CTX.with(|c| {
-                    if let Some(ctx) = c.borrow_mut().as_mut() {
-                        toggle_panel(ctx);
-                    }
-                });
+                with_ctx(toggle_panel);
             } else if click == WM_RBUTTONUP {
                 // Right-click keeps a minimal classic menu, which is where Exit
                 // lives: the panel design has no room for it.
-                CTX.with(|c| {
-                    if let Some(ctx) = c.borrow().as_ref() {
-                        show_menu(hwnd, ctx);
-                    }
-                });
+                with_ctx(|ctx| show_menu(hwnd, ctx));
             }
             LRESULT(0)
         }
@@ -256,48 +272,28 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_LBUTTONDOWN if panel::tag(hwnd) == panel::TAG_PANEL => {
             let (x, y) = panel::point_from_lparam(lp);
-            CTX.with(|c| {
-                if let Some(ctx) = c.borrow_mut().as_mut() {
-                    on_panel_press(ctx, x, y);
-                }
-            });
+            with_ctx(|ctx| on_panel_press(ctx, x, y));
             LRESULT(0)
         }
         WM_MOUSEMOVE if panel::tag(hwnd) == panel::TAG_PANEL => {
             if panel::left_button_down(wp) {
                 let (x, _) = panel::point_from_lparam(lp);
-                CTX.with(|c| {
-                    if let Some(ctx) = c.borrow_mut().as_mut() {
-                        on_panel_drag(ctx, x);
-                    }
-                });
+                with_ctx(|ctx| on_panel_drag(ctx, x));
             }
             LRESULT(0)
         }
         WM_LBUTTONUP if panel::tag(hwnd) == panel::TAG_PANEL => {
-            CTX.with(|c| {
-                if let Some(ctx) = c.borrow_mut().as_mut() {
-                    on_panel_release(ctx);
-                }
-            });
+            with_ctx(on_panel_release);
             LRESULT(0)
         }
         // Clicking away closes the panel, which is what a tray popup should do.
         WM_ACTIVATE if panel::tag(hwnd) == panel::TAG_PANEL && wp.0 == 0 => {
-            CTX.with(|c| {
-                if let Some(ctx) = c.borrow_mut().as_mut() {
-                    hide_panel(ctx);
-                }
-            });
+            with_ctx(hide_panel);
             LRESULT(0)
         }
         WM_COMMAND => {
             let id = wp.0 & 0xFFFF;
-            CTX.with(|c| {
-                if let Some(ctx) = c.borrow().as_ref() {
-                    on_command(id, ctx);
-                }
-            });
+            with_ctx(|ctx| on_command(id, ctx));
             LRESULT(0)
         }
         WM_DESTROY => {
@@ -334,15 +330,18 @@ fn redraw_panel(ctx: &mut Ctx) {
     ctx.hits = panel.hits.clone();
     ctx.track = panel.track;
 
+    let first_show = !ctx.panel_visible;
     unsafe {
-        let (x, y) = if ctx.panel_visible {
+        let (x, y) = if first_show {
+            panel::anchor(img.width as i32, img.height as i32)
+        } else {
+            // Keep the panel where it is across repaints; re-anchoring to the
+            // cursor would make it walk around the screen as values update.
             let mut r = windows::Win32::Foundation::RECT::default();
             let _ = windows::Win32::UI::WindowsAndMessaging::GetWindowRect(ctx.panel_hwnd, &mut r);
             (r.left, r.top)
-        } else {
-            panel::anchor(img.width as i32, img.height as i32)
         };
-        if let Err(e) = panel::show(ctx.panel_hwnd, x, y, &img) {
+        if let Err(e) = panel::show(ctx.panel_hwnd, x, y, &img, first_show) {
             tracing::error!("showing the panel failed: {e}");
             return;
         }
