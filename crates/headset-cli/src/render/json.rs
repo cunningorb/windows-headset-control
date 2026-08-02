@@ -1,4 +1,4 @@
-use headset_device::{Candidate, CollectionInfo};
+use headset_device::{is_supported_device, Candidate, CollectionInfo};
 use serde_json::{json, Value};
 
 use crate::redact::Redactor;
@@ -29,6 +29,7 @@ pub fn collection_value(
         "manufacturer": c.manufacturer,
         "serial": r.serial(c.has_serial),
         "path": r.path(&c.id),
+        "supported_device": is_supported_device(c),
         "score": cand.map(|x| x.score),
         "disqualified": cand.and_then(|x| x.disqualified.clone()),
         "reasons": cand.map(|x| x.reasons.clone()).unwrap_or_default(),
@@ -53,10 +54,20 @@ pub fn render_list(
         .filter(|c| shown.contains(&c.index))
         .cloned()
         .collect();
-    let best = shown_ranked
+
+    // Automatic selection is scoped to devices this project actually
+    // supports (see `human::render_list` for the rationale); `collections`
+    // above still lists every collection `list` saw, each carrying its own
+    // `supported_device` flag.
+    let supported_ranked: Vec<Candidate> = shown_ranked
+        .iter()
+        .filter(|c| is_supported_device(&all[c.index]))
+        .cloned()
+        .collect();
+    let best = supported_ranked
         .iter()
         .find(|c| c.disqualified.is_none())
-        .filter(|_| headset_device::has_unambiguous_winner(&shown_ranked))
+        .filter(|_| headset_device::has_unambiguous_winner(&supported_ranked))
         .map(|c| c.index);
 
     serde_json::to_string_pretty(&json!({
@@ -68,7 +79,12 @@ pub fn render_list(
     .expect("serialization cannot fail")
 }
 
-pub fn render_inspect(index: usize, c: &CollectionInfo, r: &Redactor) -> String {
+pub fn render_inspect(
+    index: usize,
+    c: &CollectionInfo,
+    cand: Option<&Candidate>,
+    r: &Redactor,
+) -> String {
     let items: Vec<Value> = c
         .report_items
         .iter()
@@ -86,7 +102,7 @@ pub fn render_inspect(index: usize, c: &CollectionInfo, r: &Redactor) -> String 
         })
         .collect();
 
-    let mut root = collection_value(index, c, None, r);
+    let mut root = collection_value(index, c, cand, r);
     root["schema_version"] = json!(SCHEMA_VERSION);
     root["report_items"] = json!(items);
     root["opened_for_io"] = json!(false);

@@ -1,6 +1,6 @@
 use std::fmt::Write as _;
 
-use headset_device::{Candidate, CollectionInfo, ReportKind};
+use headset_device::{is_supported_device, Candidate, CollectionInfo, ReportKind};
 
 use crate::redact::Redactor;
 
@@ -83,15 +83,45 @@ pub fn render_list(
         .filter(|c| shown.contains(&c.index))
         .cloned()
         .collect();
-    if headset_device::has_unambiguous_winner(&shown_ranked) {
-        if let Some(best) = shown_ranked.iter().find(|c| c.disqualified.is_none()) {
+
+    // Automatic selection must be scoped to devices this project actually
+    // supports: shape-based ranking alone will happily pick an unrelated
+    // vendor's HID collection off the same machine (see
+    // `headset_device::select::is_supported_device`). `list` still shows
+    // every collection it saw, but only ever names a *supported* one as the
+    // control candidate.
+    let supported_ranked: Vec<Candidate> = shown_ranked
+        .iter()
+        .filter(|c| is_supported_device(&all[c.index]))
+        .cloned()
+        .collect();
+    let best_supported = headset_device::has_unambiguous_winner(&supported_ranked)
+        .then(|| supported_ranked.iter().find(|c| c.disqualified.is_none()))
+        .flatten();
+
+    match best_supported {
+        Some(best) => {
             let _ = writeln!(s, "Best control candidate: index {}", best.index);
         }
-    } else {
-        let _ = writeln!(
-            s,
-            "No unambiguous control candidate. Pass --candidate <index> explicitly."
-        );
+        None => {
+            let _ = writeln!(
+                s,
+                "No unambiguous control candidate. Pass --candidate <index> explicitly."
+            );
+        }
+    }
+
+    // The top-scoring collection overall may belong to a device this project
+    // does not support. Report it as a separate, clearly-labelled fact rather
+    // than hiding it: `list` is a diagnostic and should still show what it saw.
+    if let Some(top) = shown_ranked.iter().find(|c| c.disqualified.is_none()) {
+        if !is_supported_device(&all[top.index]) {
+            let _ = writeln!(
+                s,
+                "Highest-scoring vendor collection: index {} (not a device this project supports)",
+                top.index
+            );
+        }
     }
     s
 }

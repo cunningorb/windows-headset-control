@@ -5,6 +5,8 @@ use headset_device::{
 };
 
 const FIXTURE: &str = include_str!("../../headset-device/tests/fixtures/blackshark-v3-pro-ps.json");
+const FIXTURE_WITH_INTERLOPER: &str =
+    include_str!("../../headset-device/tests/fixtures/blackshark-plus-interloper.json");
 
 fn sorted() -> Vec<CollectionInfo> {
     let mut all = FakeHidBackend::from_fixture_str(FIXTURE)
@@ -108,11 +110,52 @@ fn no_output_contains_a_raw_path_by_default() {
 }
 
 #[test]
+fn list_never_names_an_unsupported_device_as_the_control_candidate() {
+    // blackshark-plus-interloper.json adds a fifth, unrelated vendor (0x1770)
+    // collection that outscores every headset collection under
+    // `rank_candidates`'s shape-only formula. `list` must scope its "Best
+    // control candidate" determination to `is_supported_device`, exactly as
+    // `probe` already does, so it never steers an operator toward
+    // `probe --candidate <the interloper's index>`.
+    let mut all: Vec<CollectionInfo> = FakeHidBackend::from_fixture_str(FIXTURE_WITH_INTERLOPER)
+        .unwrap()
+        .enumerate()
+        .unwrap();
+    stable_sort_collections(&mut all);
+    let ranked = rank_candidates(&all);
+    let interloper_index = all.iter().position(|c| c.vendor_id == 0x1770).unwrap();
+    let headset_index = all.iter().position(|c| c.usage_page == 0xFF14).unwrap();
+    let shown = all_indices(&all);
+
+    for json in [false, true] {
+        let out = render_list(&all, &ranked, &shown, &Redactor::new(false), json);
+        if json {
+            let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(
+                v["best_candidate_index"], headset_index,
+                "json={json}: best_candidate_index must be the headset, not the interloper"
+            );
+        } else {
+            let interloper_line = format!("Best control candidate: index {interloper_index}");
+            assert!(
+                !out.contains(&interloper_line),
+                "json={json}: interloper must never be named the control candidate:\n{out}"
+            );
+            let headset_line = format!("Best control candidate: index {headset_index}");
+            assert!(
+                out.contains(&headset_line),
+                "json={json}: expected the headset's 0xFF14 collection to be named:\n{out}"
+            );
+        }
+    }
+}
+
+#[test]
 fn inspect_human_output_is_stable() {
     let all = sorted();
     let index = all.iter().position(|c| c.usage_page == 0xFF14).unwrap();
     let control = &all[index];
-    let out = render_inspect(index, control, &Redactor::new(false), false);
+    let out = render_inspect(index, control, None, &Redactor::new(false), false);
     assert!(!out.contains("fixture"), "raw path fragment leaked");
     assert!(
         !out.to_lowercase().contains("\\\\?\\hid#"),
@@ -126,7 +169,7 @@ fn inspect_json_reports_declared_report_ids() {
     let all = sorted();
     let index = all.iter().position(|c| c.usage_page == 0xFF14).unwrap();
     let control = &all[index];
-    let out = render_inspect(index, control, &Redactor::new(false), true);
+    let out = render_inspect(index, control, None, &Redactor::new(false), true);
     assert!(!out.contains("fixture"), "raw path fragment leaked");
     assert!(
         !out.to_lowercase().contains("\\\\?\\hid#"),
@@ -139,4 +182,38 @@ fn inspect_json_reports_declared_report_ids() {
     assert!(items
         .iter()
         .any(|i| i["report_id"] == 2 && i["kind"] == "output"));
+}
+
+#[test]
+fn inspect_json_score_matches_what_list_reports_for_the_same_index() {
+    // For the same collection at the same schema_version, `list --json` and
+    // `inspect --json` must not contradict each other: previously `inspect`
+    // always reported `"score": null, "reasons": []` because `render_inspect`
+    // passed `None` for the `Candidate` regardless of what `list` computed.
+    let all = sorted();
+    let ranked = rank_candidates(&all);
+    let index = all.iter().position(|c| c.usage_page == 0xFF14).unwrap();
+    let control = &all[index];
+
+    let list_out = render_list(
+        &all,
+        &ranked,
+        &all_indices(&all),
+        &Redactor::new(false),
+        true,
+    );
+    let list_v: serde_json::Value = serde_json::from_str(&list_out).unwrap();
+    let list_score = list_v["collections"][index]["score"].clone();
+    assert_ne!(
+        list_score,
+        serde_json::Value::Null,
+        "sanity: list reports a real score"
+    );
+
+    let cand = ranked.iter().find(|c| c.index == index);
+    let inspect_out = render_inspect(index, control, cand, &Redactor::new(false), true);
+    let inspect_v: serde_json::Value = serde_json::from_str(&inspect_out).unwrap();
+
+    assert_eq!(inspect_v["score"], list_score);
+    assert_ne!(inspect_v["reasons"], serde_json::json!([]));
 }

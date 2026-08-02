@@ -1,6 +1,6 @@
 ---
 source: crates/headset-cli/tests/render_snapshots.rs
-assertion_line: 29
+assertion_line: 40
 expression: out
 ---
 {
@@ -23,6 +23,7 @@ expression: out
       ],
       "score": 0,
       "serial": "<present, redacted>",
+      "supported_device": true,
       "usage": "0x0001",
       "usage_page": "0x000c",
       "vendor_id": "0x1532",
@@ -47,6 +48,7 @@ expression: out
       ],
       "score": 172,
       "serial": "<present, redacted>",
+      "supported_device": true,
       "usage": "0x0001",
       "usage_page": "0xff13",
       "vendor_id": "0x1532",
@@ -69,6 +71,7 @@ expression: out
       ],
       "score": 0,
       "serial": "<present, redacted>",
+      "supported_device": true,
       "usage": "0x0005",
       "usage_page": "0x000b",
       "vendor_id": "0x1532",
@@ -93,6 +96,7 @@ expression: out
       ],
       "score": 174,
       "serial": "<present, redacted>",
+      "supported_device": true,
       "usage": "0x0001",
       "usage_page": "0xff14",
       "vendor_id": "0x1532",

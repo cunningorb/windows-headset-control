@@ -23,9 +23,15 @@ pub fn render_list(
     }
 }
 
-pub fn render_inspect(index: usize, c: &CollectionInfo, r: &Redactor, as_json: bool) -> String {
+pub fn render_inspect(
+    index: usize,
+    c: &CollectionInfo,
+    cand: Option<&Candidate>,
+    r: &Redactor,
+    as_json: bool,
+) -> String {
     if as_json {
-        json::render_inspect(index, c, r)
+        json::render_inspect(index, c, cand, r)
     } else {
         human::render_inspect(c, r)
     }
