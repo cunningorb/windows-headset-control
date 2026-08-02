@@ -10,7 +10,10 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+# Matches the toolchain pinned in rust-toolchain.toml, which is what CI builds
+# and tests with. Not an independently verified floor: no job builds against an
+# older compiler, so claiming one would be a promise nothing checks.
+rust-version = "1.97"
 publish = false
 license = "MIT OR Apache-2.0"
 description = "Experimental native Windows HID controller for supported wireless headset settings."

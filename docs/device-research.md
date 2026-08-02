@@ -21,7 +21,7 @@ on USB interface 5.
 output plus interrupt input. `COL04` is the presumptive control collection.
 
 This confirms the live-hardware run recorded in `list --vendor-id 0x1532`
-(`.superpowers/sdd/2026-08-01-phase1-enumeration-and-probe/task-7-report.md`), which
+(recorded during the Phase 1 enumeration work), which
 enumerated the same four collections at absolute indices 10–13 with identical usage
 pages, report widths, and report IDs:
 

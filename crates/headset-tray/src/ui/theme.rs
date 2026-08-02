@@ -1,7 +1,7 @@
 //! Palette and metrics.
 //!
-//! Every value here was sampled by pixel from the mockups in
-//! `Documents\ShareX\Screenshots\2026-08\opera_*.png`, not estimated. Text
+//! Every value here was sampled by pixel from the design mockups (not
+//! committed to this repository), not estimated. Text
 //! colours are peak luminance within a glyph run, because averaging over
 //! anti-aliased text reads far too dark.
 //!

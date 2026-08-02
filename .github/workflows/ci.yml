@@ -33,5 +33,28 @@ jobs:
         env:
           HEADSET_HARDWARE_TESTS: ""
 
+      - name: Third-party notices are current
+        shell: pwsh
+        run: |
+          # Third-party crates only. A workspace member prints its absolute path
+          # in parentheses, which must not reach a public log: this project's own
+          # rules say device paths and machine-identifying strings stay out of
+          # logs, and a checkout path names the user.
+          $thirdParty = cargo tree --workspace --prefix none --format "{p} {l}" |
+            Where-Object { $_ -match '\S' -and $_ -notmatch '\((?:[A-Za-z]:|/)' } |
+            Sort-Object -Unique
+          $missing = $thirdParty | Where-Object {
+            $name = ($_ -split ' ')[0]
+            -not (Select-String -Path THIRD_PARTY_NOTICES.md -SimpleMatch $name -Quiet)
+          }
+          if ($missing) {
+            Write-Host "Dependencies missing from THIRD_PARTY_NOTICES.md:"
+            $missing | ForEach-Object { Write-Host "  $_" }
+            Write-Host ""
+            Write-Host "Regenerate with: cargo tree --workspace --prefix none --format ""{p} {l}"""
+            exit 1
+          }
+          Write-Host "All $($thirdParty.Count) third-party dependencies are listed."
+
       - name: Release build
         run: cargo build --workspace --release --target x86_64-pc-windows-gnu

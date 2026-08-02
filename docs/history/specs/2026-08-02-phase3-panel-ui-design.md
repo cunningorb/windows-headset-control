@@ -5,9 +5,9 @@ custom-drawn panel matching the supplied mockups.
 
 ## Source of truth for appearance
 
-Eight mockup screenshots, `Documents\ShareX\Screenshots\2026-08\opera_*.png`. Every colour
-and dimension below was **sampled from those images**, not estimated. Where this document
-and the mockups disagree, the mockups win and this document is wrong.
+Eight design mockup screenshots, not committed to this repository. Every colour and
+dimension below was **sampled from those images**, not estimated. Where this document and
+the mockups disagree, the mockups win and this document is wrong.
 
 ## Palette
 

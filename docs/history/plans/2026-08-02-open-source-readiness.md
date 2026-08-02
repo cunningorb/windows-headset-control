@@ -29,7 +29,7 @@
 | `CONTRIBUTING.md` | Rewritten for contributors; the GNU-toolchain trap documented where people will look. | 4 |
 | `CODE_OF_CONDUCT.md` | **New.** Contributor Covenant 2.1. | 5 |
 | `.github/ISSUE_TEMPLATE/*.yml`, `.github/PULL_REQUEST_TEMPLATE.md` | **New.** Enforce redaction and the allowlist rule at the point of contribution. | 5 |
-| `docs/superpowers/` → `docs/history/` | Renamed, with an explainer; dangling reference fixed. | 6 |
+| `docs/history/` → `docs/history/` | Renamed, with an explainer; dangling reference fixed. | 6 |
 | `crates/headset-tray/src/ui/theme.rs`, phase-3 spec | Dangling mockup path reworded. | 6 |
 | `.github/workflows/ci.yml` | Third-party notices freshness check. | 6 |
 | `CHANGELOG.md` | **New.** Keep a Changelog format. | 7 |
@@ -700,13 +700,13 @@ git commit -m "docs: add a code of conduct and contribution templates"
 
 **Problem being fixed:** four small things that each make the repo look unfinished to an outside reader.
 
-1. **`docs/superpowers/` names a tool the reader does not have.** Six planning documents open with `**For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development`, which reads as instructions for software the reader cannot obtain. The documents themselves are valuable design history and should stay.
+1. **`docs/history/` names a tool the reader does not have.** Six planning documents open with `**For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development`, which reads as instructions for software the reader cannot obtain. The documents themselves are valuable design history and should stay.
 2. **A reference to a path that is not in the repository.** `docs/device-research.md:24` cites `.superpowers/sdd/2026-08-01-phase1-enumeration-and-probe/task-7-report.md` — never committed, so the citation cannot be followed.
 3. **A dangling personal path.** `crates/headset-tray/src/ui/theme.rs:4` and the phase-3 spec cite `Documents\ShareX\Screenshots\2026-08\opera_*.png` as the source of truth for every colour — files nobody else has.
 4. **An MSRV that is claimed but never tested.** `rust-version = "1.85"` while `rust-toolchain.toml` pins 1.97.1, which is what CI actually uses. The claim is untested and therefore unreliable.
 
 **Files:**
-- Rename: `docs/superpowers/` → `docs/history/`
+- Rename: `docs/history/` → `docs/history/`
 - Create: `docs/history/README.md`
 - Modify: `docs/device-research.md`, `docs/clean-room-notes.md`
 - Modify: `crates/headset-tray/src/ui/theme.rs`, `docs/history/specs/2026-08-02-phase3-panel-ui-design.md`
@@ -715,9 +715,9 @@ git commit -m "docs: add a code of conduct and contribution templates"
 - [ ] **Step 1: Rename the directory and fix the references**
 
 ```bash
-git mv docs/superpowers docs/history
-git grep -ln "docs/superpowers" | ForEach-Object { (Get-Content $_) -replace 'docs/superpowers', 'docs/history' | Set-Content $_ }
-git grep -n "docs/superpowers"
+git mv docs/history docs/history
+git grep -ln "docs/history" | ForEach-Object { (Get-Content $_) -replace 'docs/history', 'docs/history' | Set-Content $_ }
+git grep -n "docs/history"
 ```
 Expected: the final grep prints nothing.
 

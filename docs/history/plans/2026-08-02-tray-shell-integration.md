@@ -34,7 +34,7 @@
 | `crates/headset-tray/src/win32/panel.rs` | Passes the icon and work rectangles to the extended placement call. | 3 |
 | `crates/headset-tray/src/ui/theme.rs` | A high-contrast palette and the accessor that chooses between palettes. | 4 |
 | `crates/headset-tray/src/ui/render.rs` | Reads colours through the accessor rather than the constants directly. | 4 |
-| `docs/superpowers/specs/2026-08-02-phase3-panel-ui-design.md` | The accessibility decision record. | 5 |
+| `docs/history/specs/2026-08-02-phase3-panel-ui-design.md` | The accessibility decision record. | 5 |
 
 ---
 
@@ -726,7 +726,7 @@ git commit -m "feat(tray): stay legible when Windows is in high contrast"
 **Problem being addressed:** the panel is a custom-drawn layered window, so Windows sees one opaque rectangle: no UI Automation tree, no screen-reader output, no keyboard navigation inside the panel. Fixing that properly means replacing the renderer with real controls and giving up the pixel-exact mockup match the whole Phase 3 design was built around. That is not a change to make silently in either direction — so this task records the decision rather than making a code change.
 
 **Files:**
-- Modify: `docs/superpowers/specs/2026-08-02-phase3-panel-ui-design.md`
+- Modify: `docs/history/specs/2026-08-02-phase3-panel-ui-design.md`
 
 - [ ] **Step 1: Append the decision record**
 
@@ -766,7 +766,7 @@ retrofitted.
 - [ ] **Step 2: Commit**
 
 ```bash
-git add docs/superpowers/specs/2026-08-02-phase3-panel-ui-design.md
+git add docs/history/specs/2026-08-02-phase3-panel-ui-design.md
 git commit -m "docs(spec): record the panel's accessibility trade-off and its mitigations"
 ```
 
