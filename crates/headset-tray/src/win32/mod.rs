@@ -33,7 +33,7 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
+    Shell_NotifyIconW, NIF_GUID, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
     NIM_SETVERSION, NIN_SELECT, NOTIFYICONDATAW, NOTIFYICON_VERSION_4,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -300,7 +300,9 @@ pub fn run_ui_with<F: FnOnce(isize)>(
             ..Default::default()
         };
         write_tip(&mut nid, "BlackShark V3 Pro - starting");
-        Shell_NotifyIconW(NIM_ADD, &nid).ok()?;
+        if !add_icon(&mut nid) {
+            return Err(windows::core::Error::from_win32());
+        }
         set_icon_version(&nid);
 
         let panel_hwnd = panel::create(instance)?;
@@ -356,6 +358,39 @@ fn write_tip(nid: &mut NOTIFYICONDATAW, text: &str) {
     nid.szTip[..wide.len()].copy_from_slice(&wide);
 }
 
+/// Identifies this tray icon to the shell across restarts and reinstalls.
+///
+/// Arbitrary but permanent: the value itself means nothing, and changing it
+/// discards every user preference attached to the icon. Do not regenerate it.
+const ICON_GUID: GUID = GUID::from_u128(0x7f3a_2c14_9b6d_4e58_a1c2_5d90_e3b4_7f61);
+
+/// Adds the notification icon, preferring a stable GUID identity.
+///
+/// Windows binds a notification GUID to the registering executable's path, so
+/// the first run from a new location — which `--install` creates by design —
+/// is rejected. Falling back to hWnd+uID identity keeps the icon working; the
+/// user loses their pin-to-taskbar choice that once, rather than losing the
+/// icon entirely.
+///
+/// Mutates `nid` so the caller keeps whichever identity actually succeeded:
+/// every later `NIM_MODIFY` and the final `NIM_DELETE` must use the same one.
+fn add_icon(nid: &mut NOTIFYICONDATAW) -> bool {
+    nid.uFlags |= NIF_GUID;
+    nid.guidItem = ICON_GUID;
+    unsafe {
+        if Shell_NotifyIconW(NIM_ADD, nid).as_bool() {
+            return true;
+        }
+        tracing::warn!(
+            "the shell refused this icon's GUID, most likely because the executable \
+             moved; falling back to window-handle identity"
+        );
+        nid.uFlags &= !NIF_GUID;
+        nid.guidItem = GUID::zeroed();
+        Shell_NotifyIconW(NIM_ADD, nid).as_bool()
+    }
+}
+
 /// Opts the icon into notification version 4.
 ///
 /// Must follow every `NIM_ADD`, including the one in `readd_icon`: the shell
@@ -398,12 +433,12 @@ fn readd_icon(ctx: &mut Ctx) {
         // the icon, adding a second one would leave a duplicate that no message
         // ever reaches.
         let _ = Shell_NotifyIconW(NIM_DELETE, &ctx.nid);
-        if Shell_NotifyIconW(NIM_ADD, &ctx.nid).as_bool() {
-            set_icon_version(&ctx.nid);
-            tracing::info!("re-added the tray icon after a shell restart");
-        } else {
-            tracing::error!("could not re-add the tray icon after a shell restart");
-        }
+    }
+    if add_icon(&mut ctx.nid) {
+        set_icon_version(&ctx.nid);
+        tracing::info!("re-added the tray icon after a shell restart");
+    } else {
+        tracing::error!("could not re-add the tray icon after a shell restart");
     }
     refresh_tray(ctx);
 }
