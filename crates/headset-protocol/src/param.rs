@@ -66,7 +66,15 @@ pub const READ_ALLOWLIST: [u8; 17] = [
 
 /// Parameters this project may write, as the low 7 bits of the command byte.
 /// Every entry was observed being written by the vendor software.
-pub const WRITE_ALLOWLIST: [u8; 5] = [0x18, 0x19, 0x1E, 0x5C, 0x6A];
+pub const WRITE_ALLOWLIST: [u8; 6] = [0x12, 0x18, 0x19, 0x1E, 0x5C, 0x6A];
+
+/// Parameters observed being written with a two-byte payload. Every other
+/// writable parameter was observed carrying exactly one.
+///
+/// The length is part of what was observed, so it is enforced rather than left
+/// to the caller: a one-byte write of `0x12` would leave the device's other
+/// byte to chance, and a two-byte write of a level was never seen at all.
+pub const PAIR_WRITES: [u8; 1] = [0x12];
 
 /// Parameters that take an index operand on read.
 pub const INDEXED_READS: [u8; 3] = [0x15, 0x60, 0x65];
@@ -89,16 +97,20 @@ pub enum Param {
     GameChatBalance,
     MicMute,
     SliderFunction,
+    /// Mode and ANC level together. Two payload bytes, so it is read and
+    /// written through [`crate::noise`] rather than as a single value.
+    NoiseCancellation,
 }
 
 impl Param {
-    pub const ALL: [Param; 6] = [
+    pub const ALL: [Param; 7] = [
         Param::LinkState,
         Param::Battery,
         Param::Sidetone,
         Param::GameChatBalance,
         Param::MicMute,
         Param::SliderFunction,
+        Param::NoiseCancellation,
     ];
 
     pub fn id(self) -> u8 {
@@ -109,6 +121,7 @@ impl Param {
             Param::GameChatBalance => 0x5C,
             Param::MicMute => 0x55,
             Param::SliderFunction => 0x6A,
+            Param::NoiseCancellation => 0x12,
         }
     }
 
@@ -121,6 +134,7 @@ impl Param {
             Param::GameChatBalance => "game-chat",
             Param::MicMute => "mic-mute",
             Param::SliderFunction => "slider-function",
+            Param::NoiseCancellation => "noise-cancellation",
         }
     }
 
@@ -137,7 +151,10 @@ impl Param {
             Param::GameChatBalance => Some((0, 20)),
             Param::Battery => Some((0, 100)),
             Param::MicMute => Some((0, 1)),
-            Param::LinkState | Param::SliderFunction => None,
+            // Noise cancellation carries two bytes, neither of which is "the"
+            // value this range would bound; `noise::ANC_LEVEL_RANGE` bounds the
+            // level alone.
+            Param::LinkState | Param::SliderFunction | Param::NoiseCancellation => None,
         }
     }
 
@@ -268,10 +285,40 @@ pub fn encode_read(
 /// `param` is the bare parameter id; the write bit is applied here so callers
 /// cannot construct a write by hand-setting bit 7 on a read-only identifier.
 pub fn encode_write(param: u8, value: u8) -> Result<[u8; CONTROL_REPORT_LEN], ProtocolError> {
+    encode_write_payload(param, &[value])
+}
+
+/// The payload length this parameter was observed being written with.
+pub fn write_payload_len(param: u8) -> usize {
+    if PAIR_WRITES.contains(&param) {
+        2
+    } else {
+        1
+    }
+}
+
+/// Builds a write request carrying a whole payload, for the parameters that
+/// were observed being written with more than a single value byte.
+///
+/// Rejects a payload of a length never seen for that identifier. The multi-byte
+/// parameters are read-modify-write on the device — see [`crate::noise`] — and
+/// sending a short payload would silently decide the omitted byte.
+pub fn encode_write_payload(
+    param: u8,
+    payload: &[u8],
+) -> Result<[u8; CONTROL_REPORT_LEN], ProtocolError> {
     if !WRITE_ALLOWLIST.contains(&param) {
         return Err(ProtocolError::NotAllowlisted { param, write: true });
     }
-    encode(param | WRITE_BIT, origin_for(param), &[value])
+    let expected = write_payload_len(param);
+    if payload.len() != expected {
+        return Err(ProtocolError::WrongWritePayloadLen {
+            param,
+            expected,
+            actual: payload.len(),
+        });
+    }
+    encode(param | WRITE_BIT, origin_for(param), payload)
 }
 
 /// A parsed response or event.
@@ -484,12 +531,50 @@ mod tests {
     #[test]
     fn round_trips_every_writable_parameter() {
         for id in WRITE_ALLOWLIST {
-            let buf = encode_write(id, 7).unwrap();
+            let payload = vec![7u8; write_payload_len(id)];
+            let buf = encode_write_payload(id, &payload).unwrap();
             let f = parse(&buf).unwrap().unwrap();
             assert_eq!(f.param, id);
             assert!(f.is_write);
-            assert_eq!(f.value(), Some(7));
+            assert_eq!(f.payload, payload);
         }
+    }
+
+    #[test]
+    fn a_two_byte_parameter_cannot_be_written_as_one() {
+        // 0x12 was only ever seen written with both bytes. A single-byte write
+        // would leave the other one to whatever the device already held.
+        assert_eq!(
+            encode_write(Param::NoiseCancellation.id(), 1),
+            Err(ProtocolError::WrongWritePayloadLen {
+                param: 0x12,
+                expected: 2,
+                actual: 1
+            })
+        );
+    }
+
+    #[test]
+    fn a_one_byte_parameter_cannot_be_written_as_two() {
+        assert_eq!(
+            encode_write_payload(Param::Sidetone.id(), &[1, 2]),
+            Err(ProtocolError::WrongWritePayloadLen {
+                param: 0x19,
+                expected: 1,
+                actual: 2
+            })
+        );
+    }
+
+    #[test]
+    fn the_payload_write_path_honours_the_allowlist_too() {
+        assert!(matches!(
+            encode_write_payload(0x33, &[1]),
+            Err(ProtocolError::NotAllowlisted {
+                param: 0x33,
+                write: true
+            })
+        ));
     }
 
     #[test]
@@ -574,12 +659,20 @@ mod tests {
     }
 
     #[test]
-    fn only_sidetone_and_game_chat_are_writable_among_named_parameters() {
+    fn named_parameters_are_writable_only_where_a_write_was_observed() {
         let writable: Vec<&str> = Param::ALL
             .into_iter()
             .filter(|p| p.is_writable())
             .map(|p| p.name())
             .collect();
-        assert_eq!(writable, vec!["sidetone", "game-chat", "slider-function"]);
+        assert_eq!(
+            writable,
+            vec![
+                "sidetone",
+                "game-chat",
+                "slider-function",
+                "noise-cancellation"
+            ]
+        );
     }
 }

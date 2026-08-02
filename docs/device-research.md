@@ -141,7 +141,7 @@ captured traffic. Rows still lacking evidence remain `unverified` and are not fi
 | Writes are delivered by `SET_REPORT` on the control pipe | `bmRequestType 0x21`, `bRequest 9`, `wValue 0x0202`, `wIndex 5` | 64 bytes on interrupt IN `0x84` | n/a | **confirmed** | Observed for every host-originated frame; see the Transport correction above |
 | Checksum is `XOR` of bytes 0..61, stored at byte 62 | n/a | n/a | byte 62 = XOR(bytes 0..61); byte 63 reserved | **confirmed** | Verified against all 200+ captured reports, both directions, no exceptions |
 | `data_size` at byte 6 equals `4 + payload length` | n/a | 4 + payload | n/a | **confirmed** | Holds across payload lengths 0, 1, 2, 6, 10, and 11 |
-| Bytes 9-10 carry the command; bit 7 of byte 10 selects write vs read | bytes 9-10 = command, byte 11 = role, byte 12 = length | varies | as above | **confirmed** | Read/write pairs observed for three parameters: `0x19`/`0x99`, `0x5C`/`0xDC`, `0x6A`/`0xEA` |
+| Bytes 9-10 carry the command; bit 7 of byte 10 selects write vs read | bytes 9-10 = command, byte 11 = role, byte 12 = length | varies | as above | **confirmed** | Read/write pairs observed for four parameters: `0x19`/`0x99`, `0x5C`/`0xDC`, `0x6A`/`0xEA`, `0x12`/`0x92` |
 | Byte 11 is a role selector (`00` request, `01` response, `02` event) | byte 11 = role | n/a | n/a | **confirmed** | All three values observed with consistent semantics across every capture |
 | A response payload of `0xFF` means refused/unavailable, for reads as well as writes | n/a | 1 byte | n/a | **confirmed** | `0x00` on every successful write; `0xFF` from `0x98`/`0x99` writes while the mic was hardware-muted, `0x00` for the identical writes once unmuted; and separately, with the headset powered off, `headsetctl` read `0xFF` from every headset-proxied parameter in one session while `0x20` reported `00 00` |
 | Frames with non-zero class/command-id bytes belong to a different family | bytes 7-8 non-zero | varies | as above | **unverified** | Two exchanges observed (`command_id` `0x84` and `0x04`); not decoded, treated as opaque |
@@ -160,6 +160,7 @@ observed to change with it; see the Unknown bytes policy.
 | `0x5C` | `0x805C` | `0x80DC` | game/chat balance | 0–20 | Same clamping evidence at `0x00` and `0x14`; centre `0x0A` |
 | `0x55` | `0x8055` | — | mic mute (hardware switch) | 0/1 | Events on the headset's physical mute; no write ever observed, and the vendor UI exposes no mute control |
 | `0x6A` | `0x806A` | `0x80EA` | onboard slider function | ≥3 states | Toggling which parameter the wheel drives changed this value; the wheel then reported through a different parameter |
+| `0x12` | `0x8012` | `0x8092` | noise control (mode + ANC level) | 2 bytes; see below | Three capture sessions isolating noise cancellation off/on, mode switching, and level 4→3→2→1→4 |
 
 Writes observed but not otherwise identified: `0x9E` (written `01` during startup).
 `0x98` is written `01` immediately before every `0x99` sidetone write, in both
@@ -167,10 +168,54 @@ directions of a mute transition, and is not written before any other parameter �
 recorded as sidetone-adjacent, not as a general preamble.
 
 Reads observed whose meaning is **unknown**, and which are deliberately unnamed:
-`0x12` (2 bytes), `0x15` (indexed 0–8, 11 bytes), `0x16`, `0x17` (10 bytes), `0x2A`,
+`0x15` (indexed 0–8, 11 bytes), `0x16`, `0x17` (10 bytes), `0x2A`,
 `0x2C`, `0x5D`, `0x5F`, `0x60` (indexed 0–8, 6 bytes), `0x65` (indexed, 2 bytes),
 `0x66`. The indexed shape of `0x15`/`0x60` is consistent with a nine-entry table, but
 no interpretation of their payload bytes is recorded, and none may be assumed.
+
+### Noise control, parameter `0x12` (2026-08-02, first-party)
+
+`0x12` had been recorded as an observed-but-unidentified two-byte read. Three further
+capture sessions, each isolating one action in the vendor UI, identified it.
+
+```text
+byte 0   mode    0x00 off | 0x01 ANC | 0x50 ambient
+byte 1   level   ANC strength, observed at 0x01, 0x02, 0x03, 0x04
+```
+
+Session 1 — noise cancellation off, then on:
+
+```text
+OUT 0x8012 REQ  (read)          IN 0x8012 RSP  01 04
+OUT 0x8092 REQ  00 04           IN 0x8092 RSP  00
+OUT 0x8012 REQ  (read)          IN 0x8012 RSP  00 04
+OUT 0x8092 REQ  01 04           IN 0x8092 RSP  00
+```
+
+Session 2 — ANC → ambient → ANC. Session 3 — level 4→3→2→1→4, where every write
+round-tripped exactly on the following read (`01 03`, then `01 02`, then `01 01`).
+
+Four facts follow, and only these four:
+
+- **Byte 0 is the mode.** Three values were observed. Any other byte is recorded as
+  unrecognised rather than being given a meaning.
+- **Byte 1 is the ANC level, and it is retained.** Switching off wrote `00 04` while the
+  level was 4, and the level was still 4 on the way back on. The vendor UI's four
+  positions map to `0x01`–`0x04` directly.
+- **Ambient has no level.** The one ambient write carried `50 01` while the level was 4,
+  and the device went on reporting `50 04`. Byte 1 is therefore not an ambient level, and
+  the `0x01` is reproduced as the constant that was seen rather than treated as one.
+  Confirmed independently: the vendor UI exposes no level control in ambient mode.
+- **The write is whole-struct.** The vendor software read `0x12` immediately before every
+  write and re-sent the byte it was not changing. Writing one byte alone was never
+  observed, and would leave the other to whatever the device already held — so
+  `encode_write_payload` refuses a one-byte write of `0x12`, and the CLI reads before it
+  writes.
+
+The range `1..=4` is **weaker evidence than sidetone's or game/chat's**: those were
+established by watching the device clamp at both ends, whereas the vendor UI has exactly
+four positions and there was nothing to push past. Values outside it are refused rather
+than sent, because what the device does with them is unobserved.
 
 ### Reads while the headset is off (2026-08-02, first-party)
 
@@ -252,8 +297,10 @@ comment, command table, or documentation was consulted, and the PID `0x0577` pri
 remains unused — its command set was never referenced, and every identifier implemented
 in Phase 2 was seen on our own wire.
 
-**Consequence:** sidetone control and game/chat balance control are unblocked. Every
-command in the Phase 2 allowlist is an identifier observed in these captures. Route 3
+**Consequence:** sidetone control, game/chat balance control, and noise control are
+unblocked. Every command in the allowlist is an identifier observed in these captures —
+including `0x92`, whose write bit follows the same bit-7 pattern as the others but which
+was added only after the write itself was seen on the wire. Route 3
 (assume the other product's command set applies) was **not** taken and remains
 prohibited.
 

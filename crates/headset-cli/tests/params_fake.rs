@@ -1,10 +1,12 @@
 //! `get` / `set` / `param` / `watch` against the fixture-driven fake backend.
 //! No hardware, no writes to a real device.
 
-use headset_cli::cli::{GetArgs, ParamAction, ParamArgs, SetArgs, WatchArgs};
+use headset_cli::cli::{
+    GetArgs, NoiseArgs, NoiseModeArg, ParamAction, ParamArgs, SetArgs, WatchArgs,
+};
 use headset_cli::cmd::params;
 use headset_device::{resolve_control_device, FakeHidBackend};
-use headset_protocol::{checksum, Param, CONTROL_REPORT_LEN};
+use headset_protocol::{checksum, Param, CONTROL_REPORT_LEN, NOISE_PARAM};
 
 const FIXTURE: &str = include_str!("../../headset-device/tests/fixtures/blackshark-v3-pro-ps.json");
 
@@ -344,6 +346,196 @@ fn param_get_passes_an_index_through_for_the_indexed_parameters() {
     let writes = b.writes();
     assert_eq!(writes[0][12], 1, "one payload byte");
     assert_eq!(writes[0][13], 3, "the index");
+}
+
+/// `noise` with nothing to change: a plain report of the current state.
+fn show() -> NoiseArgs {
+    NoiseArgs {
+        mode: None,
+        level: None,
+    }
+}
+
+#[test]
+fn noise_reports_the_state_the_device_returned() {
+    let b = backend_with(vec![response(NOISE_PARAM, false, &[0x01, 0x03])]);
+    let out = params::run_noise(&b, &show(), false).unwrap();
+    assert_eq!(out, "noise-cancellation: anc level 3\n");
+    assert_eq!(b.writes().len(), 1, "showing the state is one read");
+}
+
+#[test]
+fn noise_shows_the_level_retained_while_off() {
+    // Observed: switching off left byte 1 at 4, and switching back on used it.
+    let b = backend_with(vec![response(NOISE_PARAM, false, &[0x00, 0x04])]);
+    let out = params::run_noise(&b, &show(), false).unwrap();
+    assert_eq!(out, "noise-cancellation: off (anc level 4)\n");
+}
+
+#[test]
+fn noise_reads_before_writing_so_the_untouched_byte_is_preserved() {
+    // The vendor software read 0x12 immediately before every write and re-sent
+    // the byte it was not changing. Writing mode alone would clobber the level.
+    let b = backend_with(vec![
+        response(NOISE_PARAM, false, &[0x01, 0x04]), // current: ANC, level 4
+        response(NOISE_PARAM, true, &[0x00]),        // write ack
+        response(NOISE_PARAM, false, &[0x00, 0x04]), // read-back
+    ]);
+    let args = NoiseArgs {
+        mode: Some(NoiseModeArg::Off),
+        level: None,
+    };
+    let out = params::run_noise(&b, &args, false).unwrap();
+    assert_eq!(out, "noise-cancellation: off (anc level 4)\n");
+
+    let writes = b.writes();
+    assert_eq!(writes.len(), 3, "read, write, read-back");
+    assert_eq!(writes[0][10], 0x12, "the read comes first");
+    assert_eq!(writes[1][10], 0x92, "0x12 | write bit");
+    assert_eq!(&writes[1][13..15], &[0x00, 0x04], "level 4 carried through");
+    assert_eq!(writes[2][10], 0x12);
+}
+
+#[test]
+fn noise_level_change_keeps_the_current_mode() {
+    let b = backend_with(vec![
+        response(NOISE_PARAM, false, &[0x01, 0x04]),
+        response(NOISE_PARAM, true, &[0x00]),
+        response(NOISE_PARAM, false, &[0x01, 0x02]),
+    ]);
+    let args = NoiseArgs {
+        mode: None,
+        level: Some(2),
+    };
+    let out = params::run_noise(&b, &args, false).unwrap();
+    assert_eq!(out, "noise-cancellation: anc level 2\n");
+    assert_eq!(&b.writes()[1][13..15], &[0x01, 0x02]);
+}
+
+#[test]
+fn noise_ambient_sends_the_byte_the_vendor_software_sent() {
+    // Ambient has no level: the captured ambient write carried 01 in byte 1
+    // while the ANC level was 4, and the device went on reporting 4.
+    let b = backend_with(vec![
+        response(NOISE_PARAM, false, &[0x01, 0x04]),
+        response(NOISE_PARAM, true, &[0x00]),
+        response(NOISE_PARAM, false, &[0x50, 0x04]),
+    ]);
+    let args = NoiseArgs {
+        mode: Some(NoiseModeArg::Ambient),
+        level: None,
+    };
+    let out = params::run_noise(&b, &args, false).unwrap();
+    assert_eq!(out, "noise-cancellation: ambient (anc level 4)\n");
+    assert_eq!(&b.writes()[1][13..15], &[0x50, 0x01]);
+}
+
+#[test]
+fn noise_rejects_a_level_never_observed_before_touching_the_device() {
+    let b = backend_with(vec![]);
+    for level in [0u8, 5] {
+        let args = NoiseArgs {
+            mode: None,
+            level: Some(level),
+        };
+        let err = params::run_noise(&b, &args, false).unwrap_err().to_string();
+        assert!(err.contains("1..=4"), "level {level}: {err}");
+    }
+    assert!(
+        b.writes().is_empty(),
+        "an unobserved level must not reach the wire, not even after a read"
+    );
+}
+
+#[test]
+fn noise_will_not_write_back_a_mode_byte_never_observed() {
+    // Changing the level must not carry an unrecognised mode byte back out.
+    let b = backend_with(vec![response(NOISE_PARAM, false, &[0x02, 0x04])]);
+    let args = NoiseArgs {
+        mode: None,
+        level: Some(2),
+    };
+    let err = params::run_noise(&b, &args, false).unwrap_err().to_string();
+    assert!(err.contains("0x02"), "{err}");
+    assert_eq!(b.writes().len(), 1, "only the read happened");
+}
+
+#[test]
+fn noise_reports_a_readback_that_disagrees_with_what_was_written() {
+    let b = backend_with(vec![
+        response(NOISE_PARAM, false, &[0x01, 0x04]),
+        response(NOISE_PARAM, true, &[0x00]),
+        response(NOISE_PARAM, false, &[0x01, 0x04]), // device kept level 4
+    ]);
+    let args = NoiseArgs {
+        mode: None,
+        level: Some(2),
+    };
+    let out = params::run_noise(&b, &args, false).unwrap();
+    assert!(out.contains("wrote"), "{out}");
+    assert!(out.contains("anc level 4"), "{out}");
+}
+
+#[test]
+fn noise_is_unavailable_rather_than_wrong_when_the_headset_is_off() {
+    let b = backend_with(vec![
+        response(NOISE_PARAM, false, &[0xFF]),
+        response(Param::LinkState.id(), false, &[0x00, 0x00]),
+    ]);
+    let out = params::run_noise(&b, &show(), false).unwrap();
+    assert!(out.contains("unavailable"), "{out}");
+    assert!(out.contains("powered off"), "{out}");
+}
+
+#[test]
+fn noise_json_carries_the_mode_and_level_separately() {
+    let b = backend_with(vec![response(NOISE_PARAM, false, &[0x50, 0x04])]);
+    let out = params::run_noise(&b, &show(), true).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["parameter"], "noise-cancellation");
+    assert_eq!(v["id"], "0x12");
+    assert_eq!(v["mode"], "ambient");
+    assert_eq!(v["anc_level"], 4);
+    assert_eq!(v["payload_hex"], "50 04");
+}
+
+#[test]
+fn get_noise_cancellation_reads_as_words_not_raw_bytes() {
+    let b = backend_with(vec![response(NOISE_PARAM, false, &[0x01, 0x03])]);
+    let args = GetArgs {
+        name: "noise-cancellation".into(),
+    };
+    assert_eq!(
+        params::run_get(&b, &args, false).unwrap(),
+        "noise-cancellation: anc level 3\n"
+    );
+}
+
+#[test]
+fn set_noise_cancellation_points_at_the_command_that_can_do_it() {
+    // `set` writes one value byte; noise cancellation needs both.
+    let b = backend_with(vec![]);
+    let args = SetArgs {
+        name: "noise-cancellation".into(),
+        value: 3,
+    };
+    let err = params::run_set(&b, &args, false).unwrap_err().to_string();
+    assert!(err.contains("noise"), "{err}");
+    assert!(b.writes().is_empty());
+}
+
+#[test]
+fn param_set_refuses_a_single_byte_write_of_the_two_byte_parameter() {
+    let b = backend_with(vec![]);
+    let args = ParamArgs {
+        action: ParamAction::Set {
+            id: NOISE_PARAM,
+            value: 3,
+        },
+    };
+    let err = params::run_param(&b, &args, false).unwrap_err().to_string();
+    assert!(err.contains("two"), "{err}");
+    assert!(b.writes().is_empty());
 }
 
 #[test]

@@ -18,6 +18,22 @@ pub enum ProtocolError {
     #[error("parameter {param:#04x} does not take an index operand")]
     UnexpectedIndex { param: u8 },
 
+    #[error(
+        "parameter {param:#04x} was observed being written with {expected} payload byte(s), \
+         not {actual}"
+    )]
+    WrongWritePayloadLen {
+        param: u8,
+        expected: usize,
+        actual: usize,
+    },
+
+    #[error(
+        "parameter {param:#04x} was never observed carrying {value:#04x} in payload byte \
+         {byte}; only values seen on the wire may be sent"
+    )]
+    UnobservedValue { param: u8, byte: usize, value: u8 },
+
     #[error("payload of {actual} bytes exceeds the {max} that fit before the checksum")]
     PayloadTooLong { max: usize, actual: usize },
 

@@ -25,6 +25,7 @@ fn main() -> Result<()> {
         cli::Command::Probe(a) => cmd::probe::run(&backend, a, &r, args.json)?,
         cli::Command::Get(a) => cmd::params::run_get(&backend, a, args.json)?,
         cli::Command::Set(a) => cmd::params::run_set(&backend, a, args.json)?,
+        cli::Command::Noise(a) => cmd::params::run_noise(&backend, a, args.json)?,
         cli::Command::Param(a) => cmd::params::run_param(&backend, a, args.json)?,
         cli::Command::Watch(a) => cmd::params::run_watch(&backend, a, args.json)?,
     };

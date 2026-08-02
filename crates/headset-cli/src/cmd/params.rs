@@ -8,12 +8,13 @@ use std::time::Duration;
 use anyhow::{bail, Result};
 use headset_device::{ControlSession, HidBackend};
 use headset_protocol::{
-    encode_read, encode_write, Param, ParamFrame, ResultCode, INDEXED_READS, READ_ALLOWLIST,
+    encode_noise_write, encode_read, encode_write, NoiseControl, NoiseMode, Param, ParamFrame,
+    ResultCode, ANC_LEVEL_RANGE, INDEXED_READS, NOISE_PARAM, PAIR_WRITES, READ_ALLOWLIST,
     WRITE_ALLOWLIST,
 };
 use serde_json::json;
 
-use crate::cli::{GetArgs, ParamAction, ParamArgs, SetArgs, WatchArgs};
+use crate::cli::{GetArgs, NoiseArgs, NoiseModeArg, ParamAction, ParamArgs, SetArgs, WatchArgs};
 use crate::render::json::SCHEMA_VERSION;
 
 /// Sidetone writes are preceded by `0x18 = 01`, which is what the vendor
@@ -119,6 +120,12 @@ pub fn run_get(backend: &dyn HidBackend, args: &GetArgs, as_json: bool) -> Resul
                     "not connected"
                 }
             ),
+            None if param == Param::NoiseCancellation => {
+                match NoiseControl::from_payload(&frame.payload) {
+                    Some(c) => format!("{}: {}\n", param.name(), c.describe()),
+                    None => format!("{}: {}\n", param.name(), frame.hex_payload()),
+                }
+            }
             None => format!("{}: {}\n", param.name(), frame.hex_payload()),
         }
     })
@@ -126,6 +133,13 @@ pub fn run_get(backend: &dyn HidBackend, args: &GetArgs, as_json: bool) -> Resul
 
 pub fn run_set(backend: &dyn HidBackend, args: &SetArgs, as_json: bool) -> Result<String> {
     let param = lookup(&args.name)?;
+    if param == Param::NoiseCancellation {
+        bail!(
+            "`noise-cancellation` holds a mode and a level in two bytes that the device was \
+             only ever seen written together, so a single value cannot express it. Use \
+             `headsetctl noise --mode <off|anc|ambient> --level <1-4>`."
+        );
+    }
     if !param.is_writable() {
         bail!(
             "`{}` is read-only: no write for it was ever observed on the wire, so this \
@@ -190,6 +204,121 @@ pub fn run_set(backend: &dyn HidBackend, args: &SetArgs, as_json: bool) -> Resul
     })
 }
 
+fn mode_of(arg: NoiseModeArg) -> NoiseMode {
+    match arg {
+        NoiseModeArg::Off => NoiseMode::Off,
+        NoiseModeArg::Anc => NoiseMode::Anc,
+        NoiseModeArg::Ambient => NoiseMode::Ambient,
+    }
+}
+
+/// Show or change noise cancellation.
+///
+/// Mode and level live in one two-byte parameter, so every change is a
+/// read-modify-write: whichever field the caller left out is taken from the
+/// device and sent back unchanged. That is what the vendor software was
+/// observed doing, and writing one byte without the other would clobber it.
+pub fn run_noise(backend: &dyn HidBackend, args: &NoiseArgs, as_json: bool) -> Result<String> {
+    // Checked before the device is opened: a level never seen on the wire must
+    // not be sent, and nothing about the current state changes that.
+    let (lo, hi) = ANC_LEVEL_RANGE;
+    if let Some(level) = args.level {
+        if level < lo || level > hi {
+            bail!(
+                "anc level accepts {lo}..={hi}; {level} was never observed on this hardware, \
+                 so there is no evidence for what the device would do with it"
+            );
+        }
+    }
+
+    let mut session = ControlSession::open(backend)?;
+    let read = encode_read(NOISE_PARAM, None)?;
+    let frame = session.exchange(&read, NOISE_PARAM, false)?;
+
+    let Some(current) = NoiseControl::from_payload(&frame.payload) else {
+        // Same refusal the other proxied parameters give when the headset is
+        // unreachable. Consult the link only to explain it.
+        let probe = encode_read(Param::LinkState.id(), None)?;
+        let link_up = session
+            .exchange(&probe, Param::LinkState.id(), false)
+            .ok()
+            .map(|f| link_is_up(&f));
+        return Ok(render_noise(&frame, None, link_up, None, as_json));
+    };
+
+    if args.mode.is_none() && args.level.is_none() {
+        return Ok(render_noise(&frame, Some(current), None, None, as_json));
+    }
+
+    let desired = NoiseControl {
+        mode: args.mode.map_or(current.mode, mode_of),
+        anc_level: args.level.unwrap_or(current.anc_level),
+    };
+    let request = encode_noise_write(desired)?;
+    let ack = session.exchange(&request, NOISE_PARAM, true)?;
+    check_result(&ack, "noise-cancellation")?;
+
+    // Device is the source of truth: a successful write is not evidence that
+    // the value changed.
+    let verify = encode_read(NOISE_PARAM, None)?;
+    let now = session.exchange(&verify, NOISE_PARAM, false)?;
+    let readback = NoiseControl::from_payload(&now.payload);
+
+    Ok(render_noise(&now, readback, None, Some(desired), as_json))
+}
+
+/// Renders a noise-control state, whether it was just read or just written.
+///
+/// `requested` is present only after a write, and is what makes the difference
+/// between "this is the state" and "this is the state despite what was asked".
+fn render_noise(
+    frame: &ParamFrame,
+    state: Option<NoiseControl>,
+    link_up: Option<bool>,
+    requested: Option<NoiseControl>,
+    as_json: bool,
+) -> String {
+    let name = Param::NoiseCancellation.name();
+    if as_json {
+        return serde_json::to_string_pretty(&json!({
+            "schema_version": SCHEMA_VERSION,
+            "parameter": name,
+            "id": format!("{:#04x}", NOISE_PARAM),
+            // Null rather than a guess: an unrecognised mode byte has no name,
+            // and a refused read has no state at all.
+            "mode": state.and_then(|s| s.mode.name()),
+            "mode_byte": state.map(|s| format!("{:#04x}", s.mode.to_byte())),
+            "anc_level": state.map(|s| s.anc_level),
+            "available": state.is_some(),
+            "headset_connected": link_up,
+            "requested_mode": requested.and_then(|r| r.mode.name()),
+            "requested_anc_level": requested.map(|r| r.anc_level),
+            "applied": requested.map(|r| state == Some(r)),
+            "payload_hex": frame.hex_payload(),
+            "wrote_to_device": true,
+        }))
+        .expect("serialization cannot fail");
+    }
+
+    match (state, requested) {
+        (None, _) => match link_up {
+            Some(false) => {
+                format!("{name}: unavailable - the headset is powered off or out of range\n")
+            }
+            _ => format!(
+                "{name}: unavailable - the device answered with {}\n",
+                frame.hex_payload()
+            ),
+        },
+        (Some(now), Some(asked)) if now != asked => format!(
+            "{name}: wrote {} but the device reports {}\n",
+            asked.describe(),
+            now.describe()
+        ),
+        (Some(now), _) => format!("{name}: {}\n", now.describe()),
+    }
+}
+
 fn check_result(ack: &ParamFrame, what: &str) -> Result<()> {
     match ack.result() {
         Some(ResultCode::Ok) | None => Ok(()),
@@ -232,6 +361,12 @@ pub fn run_param(backend: &dyn HidBackend, args: &ParamArgs, as_json: bool) -> R
                     "{id:#04x} is not in the observed write allowlist. Only identifiers seen \
                      being written may be sent. Allowed: {}",
                     hex_list(&WRITE_ALLOWLIST)
+                );
+            }
+            if PAIR_WRITES.contains(id) {
+                bail!(
+                    "{id:#04x} was only ever observed being written with two payload bytes, \
+                     which `param set` cannot express. Use `headsetctl noise` for it."
                 );
             }
             let mut session = ControlSession::open(backend)?;

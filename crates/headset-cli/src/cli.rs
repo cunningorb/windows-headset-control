@@ -1,4 +1,4 @@
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 /// Accepts `0x1532`, `1532`, and `101b`. Always hexadecimal: USB IDs are
 /// universally written in hex, so a decimal reading would silently mislead.
@@ -45,6 +45,8 @@ pub enum Command {
     Get(GetArgs),
     /// Write one named parameter to the headset.
     Set(SetArgs),
+    /// Show or change noise cancellation. With no options, only reads.
+    Noise(NoiseArgs),
     /// Read or write a parameter by its raw identifier.
     Param(ParamArgs),
     /// Print decoded events as the headset pushes them.
@@ -87,6 +89,28 @@ pub struct SetArgs {
     /// The value to write.
     #[arg(value_parser = parse_value)]
     pub value: u8,
+}
+
+/// The three noise-control modes observed on the wire.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub enum NoiseModeArg {
+    Off,
+    Anc,
+    Ambient,
+}
+
+/// Both fields are optional because the device holds mode and level in one
+/// two-byte parameter: whichever is omitted is read from the device and sent
+/// back unchanged, which is what the vendor software was observed doing.
+#[derive(Args, Debug)]
+pub struct NoiseArgs {
+    /// off, anc, or ambient. Omitted leaves the current mode alone.
+    #[arg(long, value_enum)]
+    pub mode: Option<NoiseModeArg>,
+
+    /// ANC strength, 1-4. Ambient has no level. Omitted leaves it alone.
+    #[arg(long, value_parser = parse_value)]
+    pub level: Option<u8>,
 }
 
 #[derive(Args, Debug)]
