@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/cunningorb/windows-headset-control/security/advisories/new
+    about: Report privately instead of opening an issue, so a fix can land before details are public.
+  - name: Support for a different headset
+    url: https://github.com/cunningorb/windows-headset-control/blob/main/docs/device-research.md
+    about: Read how this device's protocol was established first. Other products need their own capture evidence and are not assumed compatible.

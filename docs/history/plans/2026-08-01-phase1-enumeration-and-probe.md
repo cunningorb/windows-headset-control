@@ -421,7 +421,7 @@ derived from third-party source code.
 ## Independence affirmation
 
 All code in `crates/` was written from the specification in
-`docs/superpowers/specs/2026-07-31-windows-headset-control-design.md` and from
+`docs/history/specs/2026-07-31-windows-headset-control-design.md` and from
 descriptor data measured on our own hardware.
 ```
 

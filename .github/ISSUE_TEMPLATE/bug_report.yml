@@ -1,0 +1,55 @@
+name: Bug report
+description: Something behaves differently from what the documentation says
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Before you paste any output:** `headsetctl` redacts serial numbers and device
+        paths by default. If you ran it with `--include-sensitive`, re-run it without that
+        flag and paste that output instead — both identify your machine.
+
+  - type: input
+    id: device
+    attributes:
+      label: Product id
+      description: "From `headsetctl list --vendor-id 0x1532`. This project supports 0x101B only."
+      placeholder: "0x101b"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The exact commands, or the exact sequence of clicks in the tray.
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: "Redacted. `--json` output is welcome. Tray logs: set HEADSET_TRAY_LOG=1."
+      render: text
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: "Windows 11 24H2"
+
+  - type: checkboxes
+    id: redacted
+    attributes:
+      label: Confirmation
+      options:
+        - label: I have not included serial numbers or device paths.
+          required: true

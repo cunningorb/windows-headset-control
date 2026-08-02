@@ -2,33 +2,65 @@
 
 Experimental native Windows HID controller for supported wireless headset settings.
 
-**Status:** experimental, private, unreleased. Nothing here is supported or fit for general use.
+**Status:** experimental. It works on the author's hardware and is tested against a
+fixture-driven fake device, but it speaks a protocol reconstructed by observation rather
+than from documentation. Expect rough edges, and read the risk note below before running
+it against a headset you care about.
 
 ## What this is
 
-A user-mode Windows utility that reads, and eventually controls, supported settings of a
-wireless gaming headset over its proprietary HID interface.
+A user-mode Windows utility that reads and controls settings of a Razer BlackShark V3 Pro
+wireless headset over its vendor HID interface — battery, sidetone, game/chat balance,
+microphone mute state, and noise control — from a tray application and a command line.
 
 - Runs as a normal user. No administrator rights.
 - Installs no driver and no service.
 - Reads and writes no firmware.
 - Makes no network requests and collects no telemetry.
 
-**Phase 2 adds a write path, and it is deliberately narrow.** Every command identifier the
-project can send was observed on the wire while the manufacturer's own software drove this
-hardware; the allowlists in `headset-protocol` contain nothing else, so a speculative or
-brute-forced identifier has no path to the device. `docs/device-research.md` records the
-evidence for each one, and eleven observed-but-unidentified parameters remain deliberately
-unnamed.
+**The set of commands it can send is deliberately narrow.** Every command identifier the
+project can put on the wire was observed there while the manufacturer's own software drove
+this hardware; the allowlists in `headset-protocol` contain nothing else, so a speculative
+or brute-forced identifier has no path to the device. `docs/device-research.md` records the
+evidence for each one, and ten observed-but-unidentified parameters remain deliberately
+unnamed rather than guessed at.
 
-`list`, `inspect`, and `probe` remain read-only. `probe` now opens the device with
-read-only access rights, so that is enforced by Windows rather than by the absence of a
-call.
+`list`, `inspect`, and `probe` are read-only. `probe` opens the device with read-only
+access rights, so that is enforced by Windows rather than by the absence of a call.
+
+## Supported hardware
+
+One device:
+
+| | |
+| --- | --- |
+| Product | Razer BlackShark V3 Pro (wireless, via its USB dongle) |
+| USB vendor id | `0x1532` |
+| USB product id | `0x101B` |
+
+**Other products are not supported and are not assumed compatible**, including other
+BlackShark models. The protocol here was reconstructed by watching this specific device;
+a different product id is a different device until someone captures it and records the
+evidence. See `docs/device-research.md`.
+
+To check what you have:
+
+```
+> headsetctl list --vendor-id 0x1532
+```
+
+If that prints nothing, this project cannot talk to your headset.
 
 ## Installing
 
-```
-> headset-tray.exe --install
+There are no prebuilt binaries yet: releases will be signed, and the signing setup
+(`docs/release-signing.md`) is not in place. Until then, build from source — see
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for the toolchain requirements, which are more
+specific than usual.
+
+```powershell
+cargo build --release
+.\target\release\headset-tray.exe --install
 ```
 
 Copies itself to `%LOCALAPPDATA%\Programs\HeadsetTray`, starts at sign-in, and registers
@@ -124,8 +156,8 @@ BlackShark V3 Pro PS HID
 
 Opens the selected control candidate for reading only and listens for an unsolicited
 input report within a bounded window. Sends nothing to the device; a silent result is a
-normal, expected outcome (see `docs/device-research.md`, "Blocker: no known-safe request
-exists yet").
+normal, expected outcome: the device pushes reports when something changes, and nothing
+may have changed during the window.
 
 ```
 > headsetctl probe
@@ -141,4 +173,30 @@ This is an unofficial community interoperability utility. It is not affiliated w
 authorized by, endorsed by, or sponsored by Razer Inc. or any other manufacturer.
 Product names are used only to describe hardware compatibility.
 
-Copyright © 2026. All rights reserved.
+Razer, BlackShark, and Synapse are trademarks of Razer Inc. They are used here only to
+identify the hardware this utility interoperates with. This project's licence grants no
+rights in any trademark.
+
+## Risk
+
+This utility sends vendor-specific commands to hardware, using a protocol reconstructed by
+observation rather than from a specification. It performs no firmware access of any kind,
+and every command it can send was observed being sent by the manufacturer's own software —
+but no warranty is offered, by this project's licence or otherwise. Running it may void
+your hardware warranty. Use it at your own risk.
+
+## Licence
+
+Licensed under either of
+
+- Apache License, Version 2.0 ([`LICENSE-APACHE`](LICENSE-APACHE) or
+  <https://www.apache.org/licenses/LICENSE-2.0>)
+- MIT licence ([`LICENSE-MIT`](LICENSE-MIT) or <https://opensource.org/licenses/MIT>)
+
+at your option.
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for
+inclusion in the work by you, as defined in the Apache-2.0 licence, shall be dual licensed
+as above, without any additional terms or conditions.
