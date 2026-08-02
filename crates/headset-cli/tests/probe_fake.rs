@@ -6,6 +6,10 @@ use headset_device::{FakeHidBackend, HidBackend};
 const FIXTURE: &str = include_str!("../../headset-device/tests/fixtures/blackshark-v3-pro-ps.json");
 const FIXTURE_WITH_INTERLOPER: &str =
     include_str!("../../headset-device/tests/fixtures/blackshark-plus-interloper.json");
+const FIXTURE_INTERLOPER_ONLY: &str =
+    include_str!("../../headset-device/tests/fixtures/interloper-only.json");
+const FIXTURE_UNSUPPORTED_VENDOR_READABLE: &str =
+    include_str!("../../headset-device/tests/fixtures/unsupported-vendor-readable.json");
 
 fn no_candidate(listen_ms: u64) -> ProbeArgs {
     ProbeArgs {
@@ -78,6 +82,56 @@ fn probe_vendor_id_filter_matching_nothing_produces_a_clear_not_found_error() {
         msg.contains("no supported device found") || msg.contains("0x9999"),
         "expected a clear not-found message, got: {msg}"
     );
+}
+
+#[test]
+fn probe_default_not_found_error_names_both_ids_on_one_line() {
+    // This is the most common failure path in normal use: bare `headsetctl
+    // probe` on a machine without the headset attached. The (None, None) arm
+    // of the not-found message must render the product-id list as a plain
+    // comma-separated hex list, not pretty-printed Debug output (which would
+    // embed literal newlines via `{:#06x?}` on a slice).
+    let backend = FakeHidBackend::from_fixture_str(FIXTURE_INTERLOPER_ONLY).unwrap();
+    let args = no_candidate(100);
+    let err = probe::run(&backend, &args, &Redactor::new(false), true).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        !msg.contains('\n'),
+        "error message must be one line, got: {msg}"
+    );
+    assert!(
+        msg.contains("0x1532"),
+        "expected vendor id in message: {msg}"
+    );
+    assert!(
+        msg.contains("0x101b"),
+        "expected product id in message: {msg}"
+    );
+}
+
+#[test]
+fn probe_supported_device_field_reflects_the_selected_collection() {
+    // The headset itself: supported_device is true.
+    let backend = FakeHidBackend::from_fixture_str(FIXTURE).unwrap();
+    let args = no_candidate(100);
+    let out = probe::run(&backend, &args, &Redactor::new(false), true).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["supported_device"], true);
+
+    // An explicit --candidate pointed at a foreign, but readable, vendor
+    // collection: supported_device is false, but the probe still proceeds
+    // read-only rather than refusing (the documented escape hatch).
+    let backend = FakeHidBackend::from_fixture_str(FIXTURE_UNSUPPORTED_VENDOR_READABLE).unwrap();
+    let args = ProbeArgs {
+        candidate: Some(0),
+        vendor_id: None,
+        product_id: None,
+        listen_ms: 100,
+    };
+    let out = probe::run(&backend, &args, &Redactor::new(false), true).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["supported_device"], false);
+    assert_eq!(v["usage_page"], "0xff59");
 }
 
 #[test]

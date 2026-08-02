@@ -1,0 +1,15 @@
+{
+  "collections": [
+    {
+      "path": "\\\\?\\hid#vid_1770&pid_ff00#0&fixture&0&0000",
+      "vendor_id": 6000, "product_id": 65280, "version": 272,
+      "usage_page": 65440, "usage": 1,
+      "input_report_len": 0, "output_report_len": 0, "feature_report_len": 257,
+      "product": "Unrelated EC USB", "manufacturer": "Some Other Vendor",
+      "has_serial": true,
+      "report_items": [
+        { "kind": "feature", "report_id": 1, "usage_page": 65440, "usage_min": 0, "usage_max": 0, "bit_size": 8, "report_count": 256, "is_button": false }
+      ]
+    }
+  ]
+}

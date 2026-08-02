@@ -1,0 +1,16 @@
+{
+  "collections": [
+    {
+      "path": "\\\\?\\hid#vid_05ac&pid_024f&mi_04#0&fixture&0&0000",
+      "vendor_id": 1452, "product_id": 591, "version": 312,
+      "usage_page": 65369, "usage": 97,
+      "input_report_len": 65, "output_report_len": 65, "feature_report_len": 0,
+      "product": "S98Pro Dongle", "manufacturer": null,
+      "has_serial": false,
+      "report_items": [
+        { "kind": "input", "report_id": 1, "usage_page": 65369, "usage_min": 0, "usage_max": 0, "bit_size": 8, "report_count": 64, "is_button": false },
+        { "kind": "output", "report_id": 1, "usage_page": 65369, "usage_min": 0, "usage_max": 0, "bit_size": 8, "report_count": 64, "is_button": false }
+      ]
+    }
+  ]
+}

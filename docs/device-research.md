@@ -196,6 +196,33 @@ Sidetone control, or any other write-capable feature, is **blocked** on one of t
 three routes being taken and recorded here. It is not close to working; no request
 format is known, and none should be implied to be known or "probably fine to try."
 
+## Probe observation (2026-08-01)
+
+`headsetctl probe` (Task 10) was run against this hardware with audio actively playing
+through the headset. Both vendor-defined collections were listened on, read-only:
+
+- `COL04` / `0xFF14` (candidate index 13, report ID `0x02`, 64-byte reports) — **silent**
+  at both a 2000 ms and a 5000 ms listen window. No unsolicited input report arrived.
+- `COL02` / `0xFF13` (candidate index 11, report IDs `0x07` in / `0x06` out, 62-byte
+  reports) — **silent** at a 5000 ms listen window. No unsolicited input report arrived.
+
+This was re-confirmed after a fix to `probe`'s automatic candidate selection (see the
+Task 10 fix-round history) through the corrected default path — i.e. bare `headsetctl
+probe` genuinely opening `COL04` on its own, not only via an explicit `--candidate`
+override.
+
+**What this does and does not mean.** A silent result on both collections is consistent
+with a request/response-only control channel: the device may simply not push status
+reports unsolicited, and only replies to a request it receives on its output report.
+This is exactly the outcome predicted by the Blocker section above, which established
+that no known-safe request exists yet to elicit a response. It is **not** evidence that
+either collection is the wrong one, that the device is unresponsive, or that anything is
+broken — the descriptor-level evidence for `COL04` (widest bidirectional vendor report,
+matching report ID both directions) stands on its own regardless of this observation.
+
+This finding does **not** license trying a speculative write. The Blocker section's
+three routes to a known-safe request are unchanged, and none of them has been taken.
+
 ## Prior-art hypotheses: confirmed and refuted
 
 `docs/clean-room-notes.md` records the hypotheses taken from public discussion before

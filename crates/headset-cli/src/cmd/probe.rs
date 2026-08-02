@@ -73,10 +73,17 @@ pub fn run(
         None => {
             if scoped.is_empty() {
                 let wanted = match (args.vendor_id, args.product_id) {
-                    (None, None) => format!(
-                        "vendor {SUPPORTED_VENDOR_ID:#06x}, product in {SUPPORTED_PRODUCT_IDS:#06x?} \
-                         (the only device this project supports)"
-                    ),
+                    (None, None) => {
+                        let products = SUPPORTED_PRODUCT_IDS
+                            .iter()
+                            .map(|p| format!("{p:#06x}"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!(
+                            "vendor {SUPPORTED_VENDOR_ID:#06x}, product in [{products}] \
+                             (the only device this project supports)"
+                        )
+                    }
                     (v, p) => format!(
                         "vendor {}, product {}",
                         v.map_or("<any>".to_string(), |x| format!("{x:#06x}")),
@@ -118,6 +125,20 @@ pub fn run(
         bail!("refusing to open the Windows audio collection");
     }
 
+    // `--candidate` is a deliberate escape hatch that bypasses the
+    // supported-device scope above (see the scoping comment). It stays
+    // read-only and cannot write, but the operator should know when they've
+    // pointed it at hardware this project has no protocol knowledge of.
+    let supported = is_supported_device(target);
+    if !supported {
+        eprintln!(
+            "warning: candidate {index} (vendor {:#06x}, product {:#06x}) is not a device \
+             this project has been tested against; its control protocol is unknown. \
+             Proceeding read-only because it was explicitly selected.",
+            target.vendor_id, target.product_id
+        );
+    }
+
     // Bound the listen window so a silent device cannot hang the process.
     let timeout = Duration::from_millis(args.listen_ms.clamp(100, 30_000));
 
@@ -133,6 +154,7 @@ pub fn run(
             Ok(frame) => Outcome::Frame {
                 bytes: n,
                 hex: frame.hex_payload(),
+                known_fields: frame.known_fields(),
             },
             Err(e) => Outcome::Malformed {
                 bytes: n,
@@ -145,15 +167,22 @@ pub fn run(
     drop(transport); // release the handle before rendering
 
     Ok(if as_json {
-        render_json(op, index, target, &outcome, r, timeout)
+        render_json(op, index, target, supported, &outcome, r, timeout)
     } else {
-        render_human(op, index, target, &outcome, r, timeout)
+        render_human(op, index, target, supported, &outcome, r, timeout)
     })
 }
 
 enum Outcome {
-    Frame { bytes: usize, hex: String },
-    Malformed { bytes: usize, error: String },
+    Frame {
+        bytes: usize,
+        hex: String,
+        known_fields: Vec<(&'static str, u8)>,
+    },
+    Malformed {
+        bytes: usize,
+        error: String,
+    },
     Silent,
 }
 
@@ -161,18 +190,29 @@ fn render_json(
     op: ProbeOp,
     index: usize,
     c: &CollectionInfo,
+    supported: bool,
     outcome: &Outcome,
     r: &Redactor,
     timeout: Duration,
 ) -> String {
     let result = match outcome {
-        Outcome::Frame { bytes, hex } => json!({
-            "status": "frame_received",
-            "bytes": bytes,
-            "payload_hex": hex,
-            "interpreted_fields": {},
-            "note": "no payload semantics are established for this hardware"
-        }),
+        Outcome::Frame {
+            bytes,
+            hex,
+            known_fields,
+        } => {
+            let interpreted: serde_json::Map<String, serde_json::Value> = known_fields
+                .iter()
+                .map(|(name, value)| ((*name).to_string(), json!(value)))
+                .collect();
+            json!({
+                "status": "frame_received",
+                "bytes": bytes,
+                "payload_hex": hex,
+                "interpreted_fields": interpreted,
+                "note": "no payload semantics are established for this hardware"
+            })
+        }
         Outcome::Malformed { bytes, error } => json!({
             "status": "unexpected_frame", "bytes": bytes, "error": error
         }),
@@ -187,6 +227,7 @@ fn render_json(
         "operation": format!("{op:?}"),
         "wrote_to_device": false,
         "candidate_index": index,
+        "supported_device": supported,
         "usage_page": format!("{:#06x}", c.usage_page),
         "input_report_len": c.input_report_len,
         "path": r.path(&c.id),
@@ -200,6 +241,7 @@ fn render_human(
     op: ProbeOp,
     index: usize,
     c: &CollectionInfo,
+    supported: bool,
     outcome: &Outcome,
     r: &Redactor,
     timeout: Duration,
@@ -216,10 +258,15 @@ fn render_human(
         "candidate       : [{index}] usage page {:#06x}",
         c.usage_page
     );
+    let _ = writeln!(
+        s,
+        "supported device: {}",
+        if supported { "yes" } else { "no" }
+    );
     let _ = writeln!(s, "path            : {}", r.path(&c.id));
     let _ = writeln!(s, "listen window   : {} ms", timeout.as_millis());
     match outcome {
-        Outcome::Frame { bytes, hex } => {
+        Outcome::Frame { bytes, hex, .. } => {
             let _ = writeln!(s, "result          : received {bytes} bytes");
             let _ = writeln!(s, "payload         : {hex}");
             let _ = writeln!(
