@@ -68,6 +68,10 @@ with what you asked for, you see the truth.
 Right-click the icon for Refresh and Exit. The gear opens settings: start with Windows, and
 whether to warn you when Synapse is running (it can fight this app for the same settings).
 
+The panel **follows your Windows light or dark setting** by default. **Appearance** in
+settings overrides that — auto, dark, or light. If you use Windows high contrast, it wins
+over all three.
+
 ## Good to know
 
 It's **alpha**. It works on the author's hardware and is covered by a few hundred tests,

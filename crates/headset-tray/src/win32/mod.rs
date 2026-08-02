@@ -750,6 +750,9 @@ fn on_panel_press(ctx: &mut Ctx, x: f32, y: f32) {
                 });
             }
         }
+        HitTarget::AppearanceSystem => set_appearance(ctx, crate::ui::theme::Appearance::System),
+        HitTarget::AppearanceDark => set_appearance(ctx, crate::ui::theme::Appearance::Dark),
+        HitTarget::AppearanceLight => set_appearance(ctx, crate::ui::theme::Appearance::Light),
         HitTarget::ToggleStartup => {
             let target_exe = crate::install::installed_exe()
                 .filter(|p| p.exists())
@@ -769,6 +772,17 @@ fn on_panel_press(ctx: &mut Ctx, x: f32, y: f32) {
                 redraw_panel(ctx);
             }
         }
+    }
+}
+
+/// Stores the appearance choice, re-resolves the palette, and repaints.
+///
+/// Re-resolves rather than assuming the choice maps straight to a palette:
+/// `System` depends on Windows, and high contrast overrides all three.
+fn set_appearance(ctx: &mut Ctx, a: crate::ui::theme::Appearance) {
+    if crate::settings::set_appearance(a) {
+        apply_appearance();
+        redraw_panel(ctx);
     }
 }
 

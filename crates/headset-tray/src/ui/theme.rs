@@ -85,6 +85,11 @@ pub struct Palette {
     pub text_muted: Color,
     pub state_live: Color,
     pub state_muted: Color,
+    /// The toggle knob. Its own role because it must read against an accent
+    /// track in every palette; it used to borrow `text_primary`, which is
+    /// near-white in the dark palette by coincidence and near-black in the
+    /// light one, where the knob vanished into the track.
+    pub toggle_knob: Color,
 }
 
 /// What the user asked for.
@@ -175,6 +180,7 @@ fn sampled_palette() -> Palette {
         text_muted: TEXT_MUTED,
         state_live: STATE_LIVE,
         state_muted: STATE_MUTED,
+        toggle_knob: TEXT_PRIMARY,
     }
 }
 
@@ -241,6 +247,7 @@ pub fn light_palette() -> Palette {
         text_muted: L_TEXT_MUTED,
         state_live: L_STATE_LIVE,
         state_muted: L_STATE_MUTED,
+        toggle_knob: Color::rgb(0xFFFFFF),
     }
 }
 
@@ -271,6 +278,7 @@ pub fn high_contrast_palette() -> Palette {
         text_muted: WHITE,
         state_live: CYAN,
         state_muted: YELLOW,
+        toggle_knob: WHITE,
     }
 }
 
@@ -298,6 +306,7 @@ palette_accessors!(
     text_muted,
     state_live,
     state_muted,
+    toggle_knob,
 );
 
 // ---------------------------------------------------------------- metrics ---

@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- A light theme. It follows your Windows setting by default, with an **Appearance** override
+  in settings. High contrast still wins over both.
+
 ## [0.1.0-alpha.1] - 2026-08-02
 
 First released build. Alpha: it speaks a protocol reconstructed by observation and has been
