@@ -21,8 +21,8 @@ use windows::Win32::Devices::HumanInterfaceDevice::{
     HIDP_BUTTON_CAPS, HIDP_CAPS, HIDP_REPORT_TYPE, HIDP_VALUE_CAPS, PHIDP_PREPARSED_DATA,
 };
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, ERROR_BUSY, ERROR_IO_PENDING, HANDLE, NTSTATUS,
-    WAIT_OBJECT_0, WAIT_TIMEOUT,
+    CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_BUSY, ERROR_IO_PENDING,
+    ERROR_NO_MORE_ITEMS, HANDLE, NTSTATUS, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, ReadFile, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ,
@@ -58,6 +58,16 @@ fn wide_to_string(buf: &[u16]) -> String {
 }
 
 /// Lists every present HID device interface path.
+///
+/// `SetupDiEnumDeviceInterfaces` failing is only the normal end-of-enumeration
+/// signal when `GetLastError() == ERROR_NO_MORE_ITEMS`. Any other failure code
+/// is a real, transient OS-level failure partway through the walk — treating
+/// it the same as end-of-enumeration would silently truncate the result and,
+/// because every caller treats these paths as a positionally stable list,
+/// silently shift the index of every collection enumerated after the failure
+/// point. That is the same "an index quietly stops meaning what it meant"
+/// property two earlier fix rounds established for the filtering path; here
+/// it is surfaced as an `Err` instead.
 pub fn enumerate_interface_paths() -> Result<Vec<String>, DeviceError> {
     let mut paths = Vec::new();
     unsafe {
@@ -77,6 +87,15 @@ pub fn enumerate_interface_paths() -> Result<Vec<String>, DeviceError> {
                 ..Default::default()
             };
             if SetupDiEnumDeviceInterfaces(devinfo, None, &hid_guid, index, &mut iface).is_err() {
+                let code = GetLastError();
+                if code != ERROR_NO_MORE_ITEMS {
+                    let _ = SetupDiDestroyDeviceInfoList(devinfo);
+                    return Err(DeviceError::Os(format!(
+                        "SetupDiEnumDeviceInterfaces failed with {:#010x} before \
+                         ERROR_NO_MORE_ITEMS; enumeration truncated at index {index}",
+                        code.0
+                    )));
+                }
                 break;
             }
             index += 1;
@@ -363,6 +382,21 @@ pub fn close(handle: HANDLE) {
 /// that completion before `ov` and the event are allowed to go away. The
 /// event must still be open when that call is made, since `GetOverlappedResult`
 /// waits on `ov.hEvent` internally.
+///
+/// `CancelIo` is thread-scoped: it cancels only outstanding I/O issued by the
+/// calling thread, not by the handle in general (that is what `CancelIoEx`
+/// is for). Calling it here is safe only because `WindowsTransport` holds a
+/// raw `HANDLE` and is therefore auto-`!Send`/`!Sync` — the handle can never
+/// be opened on one thread and read from another, so "the calling thread" and
+/// "the thread that issued this `ReadFile`" are always the same thread. This
+/// is currently enforced only by an accident of the type's contents (a raw
+/// `HANDLE` has no `Send`/`Sync` impl), not by an explicit `!Send` bound.
+/// Adding `unsafe impl Send for WindowsTransport` — or anything else that
+/// lets this handle cross threads — would silently break that invariant and
+/// requires switching this call to `CancelIoEx` first. Getting this wrong
+/// previously cost a Critical finding (a use of `ov`/`buf` after this
+/// function had returned); do not relax it without re-deriving the safety
+/// argument above.
 pub fn read_with_timeout(
     handle: HANDLE,
     buf: &mut [u8],
