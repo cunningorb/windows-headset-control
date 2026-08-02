@@ -274,3 +274,31 @@ level go out together; nothing is sent while that state is unknown.
 
 This addendum also supersedes "Any change to the protocol, device, or CLI crates" for the
 noise work, which added `headset-protocol::noise` and a `headsetctl noise` command.
+
+## Accessibility: an accepted trade-off (recorded 2026-08-02)
+
+The panel is a custom-drawn layered window. Windows therefore sees a single bitmap: there
+is **no UI Automation tree**, so screen readers announce nothing, there is no keyboard
+navigation between controls inside the panel, and no focus indicator.
+
+This is a consequence of the decision at the top of this document — that the mockups are
+the source of truth and appearance should match them 1:1. A panel built from real
+controls, or from XAML islands as EarTrumpet uses, would get an accessibility tree,
+keyboard navigation, and high-contrast support from the platform, at the cost of the pixel
+fidelity this design exists to achieve.
+
+**The trade-off is accepted, with mitigations:**
+
+- Every destructive or essential action — Refresh, Exit — is also on the right-click menu,
+  which is a standard `TrackPopupMenu` and is fully keyboard and screen-reader accessible.
+- The notification icon itself answers the keyboard, via `NIN_KEYSELECT` under
+  notification version 4. Enter or Space on the focused icon opens the panel, and the Menu
+  key opens the context menu.
+- Every setting the panel exposes is also reachable from `headsetctl`, which is a console
+  application and accessible by construction.
+- High contrast is honoured by the palette, so the panel does not become unreadable for
+  the users most likely to need it.
+
+**Revisit this if** a user needs screen-reader access to the panel, or if the panel grows
+controls that have no equivalent in the right-click menu or the CLI. The rebuild is large
+and should be planned as its own phase, not retrofitted.
