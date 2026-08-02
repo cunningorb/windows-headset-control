@@ -21,7 +21,8 @@ use windows::Win32::Devices::HumanInterfaceDevice::{
     HIDP_BUTTON_CAPS, HIDP_CAPS, HIDP_REPORT_TYPE, HIDP_VALUE_CAPS, PHIDP_PREPARSED_DATA,
 };
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, ERROR_BUSY, ERROR_IO_PENDING, HANDLE, NTSTATUS, WAIT_TIMEOUT,
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_BUSY, ERROR_IO_PENDING, HANDLE, NTSTATUS,
+    WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, ReadFile, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ,
@@ -347,6 +348,21 @@ pub fn close(handle: HANDLE) {
 /// (bad handle, device removed, access denied, ...) is a real failure and must
 /// be reported immediately rather than being misdiagnosed as a slow device
 /// after waiting out the full timeout.
+///
+/// Whenever the wait does not end with the event already signaled
+/// (`WAIT_OBJECT_0`) — a timeout, or any other `WaitForSingleObject` result —
+/// the read may still be in flight. `CancelIo` only *requests* cancellation;
+/// it returns as soon as the request is queued, not once the kernel has
+/// actually finished with the I/O request packet. Until that IRP completes,
+/// the driver still holds a pointer to `ov` (this stack frame) and to `buf`
+/// (the caller's buffer), and completion — including a plain cancellation —
+/// delivers the byte count via a special kernel APC that can land at any
+/// later point on this thread, including after this function has returned
+/// and `ov` no longer exists. So every non-success wait outcome is followed
+/// by a *blocking* `GetOverlappedResult` (`bWait = true`) to synchronize with
+/// that completion before `ov` and the event are allowed to go away. The
+/// event must still be open when that call is made, since `GetOverlappedResult`
+/// waits on `ov.hEvent` internally.
 pub fn read_with_timeout(
     handle: HANDLE,
     buf: &mut [u8],
@@ -360,8 +376,12 @@ pub fn read_with_timeout(
             ..Default::default()
         };
 
-        let mut read: u32 = 0;
-        let started = ReadFile(handle, Some(buf), Some(&mut read), Some(&mut ov));
+        // lpNumberOfBytesRead is documented as unreliable on overlapped
+        // handles (MSDN: pass NULL and use GetOverlappedResult instead) for
+        // the same reason as above — it's a stack write the kernel is not
+        // guaranteed to make before this call returns. The byte count always
+        // comes from GetOverlappedResult below, even on the fast path.
+        let started = ReadFile(handle, Some(buf), None, Some(&mut ov));
 
         if let Err(e) = started {
             let code = e.code().0 as u32 & 0xFFFF;
@@ -372,16 +392,38 @@ pub fn read_with_timeout(
                 return Err(map_win_error(e));
             }
         } else {
+            // Completed synchronously; the operation is already done, so this
+            // does not block.
+            let mut transferred: u32 = 0;
+            let ok = GetOverlappedResult(handle, &ov, &mut transferred, false);
             let _ = CloseHandle(event);
-            return Ok(read as usize);
+            return match ok {
+                Ok(()) => Ok(transferred as usize),
+                Err(e) => Err(map_win_error(e)),
+            };
         }
 
         let ms = timeout.as_millis().min(u128::from(u32::MAX - 1)) as u32;
         let wait = WaitForSingleObject(event, ms);
-        if wait == WAIT_TIMEOUT {
+        if wait != WAIT_OBJECT_0 {
+            // The read may still be in flight (timeout) or its outcome is
+            // simply unknown (WAIT_FAILED / anything else). Request
+            // cancellation, then block until the kernel genuinely finishes
+            // with `ov` and `buf` before this frame is allowed to go away.
+            // This normally returns ERROR_OPERATION_ABORTED; discarding it is
+            // intentional, since either way we report the wait outcome below.
             let _ = CancelIo(handle);
+            let mut discarded: u32 = 0;
+            let _ = GetOverlappedResult(handle, &ov, &mut discarded, true);
             let _ = CloseHandle(event);
-            return Err(DeviceError::Timeout(timeout));
+            return if wait == WAIT_TIMEOUT {
+                Err(DeviceError::Timeout(timeout))
+            } else {
+                Err(DeviceError::Os(format!(
+                    "WaitForSingleObject returned {:#010x}",
+                    wait.0
+                )))
+            };
         }
 
         let mut transferred: u32 = 0;
