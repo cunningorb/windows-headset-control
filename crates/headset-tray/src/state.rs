@@ -11,8 +11,15 @@ use headset_protocol::{Param, ParamFrame};
 /// not the value 255.
 const REFUSED: u8 = 0xFF;
 
+/// Shown before the device has been identified, and if its product string is
+/// missing. Deliberately generic rather than a guessed model number.
+const FALLBACK_NAME: &str = "Headset";
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HeadsetState {
+    /// The HID product string, as reported by the device. Not a hardcoded model
+    /// name: the mockups say "V2 Pro" but the hardware reports what it reports.
+    pub device_name: Option<String>,
     /// `None` until the link parameter has been read at least once.
     pub connected: Option<bool>,
     pub battery: Option<u8>,
@@ -30,6 +37,17 @@ pub struct HeadsetState {
 }
 
 impl HeadsetState {
+    /// Display name for the header.
+    ///
+    /// Strips the trailing " HID" the descriptor carries, which is an artefact
+    /// of the interface rather than part of the product's name.
+    pub fn device_name(&self) -> String {
+        match &self.device_name {
+            Some(n) => n.trim().trim_end_matches(" HID").trim().to_string(),
+            None => FALLBACK_NAME.to_string(),
+        }
+    }
+
     /// Audio is silenced if either mute is set, so the tray reports the union.
     /// Reporting only one of them would tell the user their mic is live when it
     /// is not.
@@ -170,6 +188,16 @@ mod tests {
             ..Default::default()
         };
         assert!(s.tooltip().chars().count() < 128, "{}", s.tooltip());
+    }
+
+    #[test]
+    fn the_device_name_comes_from_the_descriptor_not_a_hardcoded_model() {
+        let s = HeadsetState {
+            device_name: Some("BlackShark V3 Pro PS HID".into()),
+            ..Default::default()
+        };
+        assert_eq!(s.device_name(), "BlackShark V3 Pro PS");
+        assert_eq!(HeadsetState::default().device_name(), "Headset");
     }
 
     #[test]

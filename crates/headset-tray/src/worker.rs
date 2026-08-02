@@ -62,6 +62,9 @@ pub fn run<B: HidBackend, F: Fn(HeadsetState)>(
         if session.is_none() {
             match ControlSession::open(backend) {
                 Ok(s) => {
+                    // Take the name from the descriptor the moment the device
+                    // resolves, so the header is right before any read lands.
+                    state.device_name = s.info().product.clone();
                     session = Some(s);
                     since_refresh = FULL_REFRESH; // force an immediate read
                 }
