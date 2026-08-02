@@ -33,8 +33,8 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
-    NOTIFYICONDATAW,
+    Shell_NotifyIconW, NIF_GUID, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
+    NIM_SETVERSION, NIN_SELECT, NOTIFYICONDATAW, NOTIFYICON_VERSION_4,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
@@ -42,8 +42,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow,
     TrackPopupMenu, TranslateMessage, HICON, ICONINFO, IDC_ARROW, MF_SEPARATOR, MF_STRING, MSG,
     TPM_BOTTOMALIGN, TPM_RIGHTALIGN, WINDOW_EX_STYLE, WM_ACTIVATE, WM_APP, WM_CLOSE, WM_COMMAND,
-    WM_DESTROY, WM_DPICHANGED, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONUP, WNDCLASSW,
-    WS_OVERLAPPED,
+    WM_CONTEXTMENU, WM_DESTROY, WM_DPICHANGED, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+    WM_SETTINGCHANGE, WNDCLASSW, WS_OVERLAPPED,
 };
 
 // Not part of any public API: these are the tray's own window plumbing, and
@@ -64,6 +64,13 @@ pub const WM_STATE: u32 = WM_APP + 2;
 
 /// Posted by a second instance to ask the first to show itself.
 pub const WM_SHOW_PANEL: u32 = WM_APP + 3;
+
+/// Sent when the icon is activated by keyboard, under notification version 4.
+///
+/// `NIN_SELECT` is in the `windows` crate; `NIN_KEYSELECT` is not, so it is
+/// spelled out here. The shell defines it as `NIN_SELECT | 1` and sends it for
+/// Enter or Space on a focused icon — the whole reason for moving to version 4.
+const NIN_KEYSELECT: u32 = NIN_SELECT | 1;
 
 /// The shell's "I have restarted, re-add your icon" broadcast.
 ///
@@ -224,6 +231,7 @@ pub fn run_ui_with<F: FnOnce(isize)>(
     unsafe {
         // Before any window exists: the awareness context is fixed at first use.
         dpi::make_process_per_monitor_aware();
+        crate::ui::theme::set_high_contrast(high_contrast_enabled());
 
         // Apartment-threaded because this thread also pumps messages, which is
         // what COM's STA contract expects.
@@ -293,7 +301,10 @@ pub fn run_ui_with<F: FnOnce(isize)>(
             ..Default::default()
         };
         write_tip(&mut nid, "BlackShark V3 Pro - starting");
-        Shell_NotifyIconW(NIM_ADD, &nid).ok()?;
+        if !add_icon(&mut nid) {
+            return Err(windows::core::Error::from_win32());
+        }
+        set_icon_version(&nid);
 
         let panel_hwnd = panel::create(instance)?;
         panel::set_tag(panel_hwnd, panel::TAG_PANEL);
@@ -348,6 +359,80 @@ fn write_tip(nid: &mut NOTIFYICONDATAW, text: &str) {
     nid.szTip[..wide.len()].copy_from_slice(&wide);
 }
 
+/// Whether Windows is in high-contrast mode.
+fn high_contrast_enabled() -> bool {
+    use windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SystemParametersInfoW, SPI_GETHIGHCONTRAST, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    };
+
+    unsafe {
+        let mut hc = HIGHCONTRASTW {
+            cbSize: std::mem::size_of::<HIGHCONTRASTW>() as u32,
+            ..Default::default()
+        };
+        let ok = SystemParametersInfoW(
+            SPI_GETHIGHCONTRAST,
+            std::mem::size_of::<HIGHCONTRASTW>() as u32,
+            Some(&mut hc as *mut HIGHCONTRASTW as *mut std::ffi::c_void),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        );
+        ok.is_ok() && (hc.dwFlags & HCF_HIGHCONTRASTON).0 != 0
+    }
+}
+
+/// Identifies this tray icon to the shell across restarts and reinstalls.
+///
+/// Arbitrary but permanent: the value itself means nothing, and changing it
+/// discards every user preference attached to the icon. Do not regenerate it.
+const ICON_GUID: GUID = GUID::from_u128(0x7f3a_2c14_9b6d_4e58_a1c2_5d90_e3b4_7f61);
+
+/// Adds the notification icon, preferring a stable GUID identity.
+///
+/// Windows binds a notification GUID to the registering executable's path, so
+/// the first run from a new location — which `--install` creates by design —
+/// is rejected. Falling back to hWnd+uID identity keeps the icon working; the
+/// user loses their pin-to-taskbar choice that once, rather than losing the
+/// icon entirely.
+///
+/// Mutates `nid` so the caller keeps whichever identity actually succeeded:
+/// every later `NIM_MODIFY` and the final `NIM_DELETE` must use the same one.
+fn add_icon(nid: &mut NOTIFYICONDATAW) -> bool {
+    nid.uFlags |= NIF_GUID;
+    nid.guidItem = ICON_GUID;
+    unsafe {
+        if Shell_NotifyIconW(NIM_ADD, nid).as_bool() {
+            return true;
+        }
+        tracing::warn!(
+            "the shell refused this icon's GUID, most likely because the executable \
+             moved; falling back to window-handle identity"
+        );
+        nid.uFlags &= !NIF_GUID;
+        nid.guidItem = GUID::zeroed();
+        Shell_NotifyIconW(NIM_ADD, nid).as_bool()
+    }
+}
+
+/// Opts the icon into notification version 4.
+///
+/// Must follow every `NIM_ADD`, including the one in `readd_icon`: the shell
+/// forgets the version along with the icon when it restarts, and an icon that
+/// silently reverts to the legacy version stops answering the keyboard.
+fn set_icon_version(nid: &NOTIFYICONDATAW) {
+    let mut versioned = *nid;
+    // uVersion shares a union with uTimeout; this field is only read by
+    // NIM_SETVERSION, so setting it here affects nothing else.
+    versioned.Anonymous.uVersion = NOTIFYICON_VERSION_4;
+    unsafe {
+        if !Shell_NotifyIconW(NIM_SETVERSION, &versioned).as_bool() {
+            tracing::warn!(
+                "could not set notification version 4; icon will not answer the keyboard"
+            );
+        }
+    }
+}
+
 fn refresh_tray(ctx: &mut Ctx) {
     let tip = ctx
         .state
@@ -371,11 +456,12 @@ fn readd_icon(ctx: &mut Ctx) {
         // the icon, adding a second one would leave a duplicate that no message
         // ever reaches.
         let _ = Shell_NotifyIconW(NIM_DELETE, &ctx.nid);
-        if Shell_NotifyIconW(NIM_ADD, &ctx.nid).as_bool() {
-            tracing::info!("re-added the tray icon after a shell restart");
-        } else {
-            tracing::error!("could not re-add the tray icon after a shell restart");
-        }
+    }
+    if add_icon(&mut ctx.nid) {
+        set_icon_version(&ctx.nid);
+        tracing::info!("re-added the tray icon after a shell restart");
+    } else {
+        tracing::error!("could not re-add the tray icon after a shell restart");
     }
     refresh_tray(ctx);
 }
@@ -383,13 +469,24 @@ fn readd_icon(ctx: &mut Ctx) {
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_TRAY => {
-            let click = lp.0 as u32;
-            if click == WM_LBUTTONUP {
-                with_ctx(toggle_panel);
-            } else if click == WM_RBUTTONUP {
-                // Right-click keeps a minimal classic menu, which is where Exit
-                // lives: the panel design has no room for it.
-                with_ctx(|ctx| show_menu(hwnd, ctx));
+            // Version 4 packing: notification in the low word of lParam, icon
+            // id in the high word. Masking is required -- comparing the whole
+            // lParam against WM_LBUTTONUP silently stops matching.
+            let notification = (lp.0 as u32) & 0xFFFF;
+            match notification {
+                // NIN_SELECT is a click; NIN_KEYSELECT is Enter or Space on a
+                // focused icon. Both mean "activate", and handling only the
+                // first is what makes an icon mouse-only.
+                NIN_SELECT | NIN_KEYSELECT => {
+                    with_ctx(toggle_panel);
+                }
+                // Replaces WM_RBUTTONUP under version 4, and is also what the
+                // Menu key and Shift+F10 produce on a focused icon. The classic
+                // menu is where Exit lives: the panel design has no room for it.
+                WM_CONTEXTMENU => {
+                    with_ctx(|ctx| show_menu(hwnd, ctx));
+                }
+                _ => {}
             }
             LRESULT(0)
         }
@@ -450,6 +547,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 }
             });
             PostQuitMessage(0);
+            LRESULT(0)
+        }
+        // The user turned high contrast on or off while we were running.
+        WM_SETTINGCHANGE => {
+            crate::ui::theme::set_high_contrast(high_contrast_enabled());
+            with_ctx(|ctx| {
+                if ctx.panel_visible {
+                    redraw_panel(ctx);
+                }
+            });
             LRESULT(0)
         }
         // A second instance asked us to show ourselves rather than starting a

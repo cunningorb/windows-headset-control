@@ -185,6 +185,16 @@ fn run_render_panel() {
     });
     cases.push(("live-noise-anc-1", anc1, View::Main, SliderParam::GameChat));
 
+    // The high-contrast palette, so it can be diffed like every other state
+    // rather than being taken on trust. Rendered from the same fixture as the
+    // first case, so the two files differ only by palette.
+    cases.push((
+        "high-contrast",
+        base.clone(),
+        View::Main,
+        SliderParam::GameChat,
+    ));
+
     let mut off = base.clone();
     off.connected = Some(false);
     off.battery = None;
@@ -213,6 +223,9 @@ fn run_render_panel() {
         if args.len() > 1 && !args[1..].iter().any(|a| a == name) {
             continue;
         }
+        // One fixture exercises the accessibility palette; the rest are the
+        // sampled one, so the flag is set per case rather than once.
+        headset_tray::ui::theme::set_high_contrast(name == "high-contrast");
         let panel = ui::build(&state, view, param, None);
         match renderer.render(&panel, 1.0) {
             Ok(img) => {

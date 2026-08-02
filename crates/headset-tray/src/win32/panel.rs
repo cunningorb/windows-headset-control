@@ -188,7 +188,7 @@ pub unsafe fn anchor(owner: HWND, icon_id: u32, w: i32, h: i32) -> (i32, i32) {
         }
     };
     let work = work_area_for(icon);
-    place::above_icon(place::Bounds::from_rect(icon), work, w, h, 8)
+    place::beside_icon(place::Bounds::from_rect(icon), work, w, h, 8)
 }
 
 /// Repositions an already-placed panel for a new height, holding its **bottom**

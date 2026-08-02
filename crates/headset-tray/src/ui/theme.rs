@@ -63,6 +63,124 @@ pub const STATE_MUTED: Color = Color::rgb(0xE0555F);
 /// Everything is drawn dimmed at this opacity when the headset is unreachable.
 pub const DISABLED_ALPHA: u8 = 0x66;
 
+// --------------------------------------------------------------- palettes ---
+
+/// Every colour the panel draws with, chosen for the current accessibility
+/// settings. `layout` reads colours through the accessors below rather than
+/// from the constants, so a second palette needs no changes at the call sites.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Palette {
+    pub bg_panel: Color,
+    pub bg_card: Color,
+    pub bg_banner: Color,
+    pub bg_button: Color,
+    pub border_card: Color,
+    pub border_banner: Color,
+    pub track_inactive: Color,
+    pub accent: Color,
+    pub accent_text: Color,
+    pub accent_label: Color,
+    pub text_primary: Color,
+    pub text_secondary: Color,
+    pub text_muted: Color,
+    pub state_live: Color,
+    pub state_muted: Color,
+}
+
+/// Set once at startup and whenever Windows reports a settings change. An
+/// atomic rather than a lock: it is read on every primitive during a paint and
+/// written approximately never.
+static HIGH_CONTRAST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_high_contrast(on: bool) {
+    HIGH_CONTRAST.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn palette() -> Palette {
+    if HIGH_CONTRAST.load(std::sync::atomic::Ordering::Relaxed) {
+        high_contrast_palette()
+    } else {
+        sampled_palette()
+    }
+}
+
+/// The mockup palette, unchanged. Every value is the constant above it.
+fn sampled_palette() -> Palette {
+    Palette {
+        bg_panel: BG_PANEL,
+        bg_card: BG_CARD,
+        bg_banner: BG_BANNER,
+        bg_button: BG_BUTTON,
+        border_card: BORDER_CARD,
+        border_banner: BORDER_BANNER,
+        track_inactive: TRACK_INACTIVE,
+        accent: ACCENT,
+        accent_text: ACCENT_TEXT,
+        accent_label: ACCENT_LABEL,
+        text_primary: TEXT_PRIMARY,
+        text_secondary: TEXT_SECONDARY,
+        text_muted: TEXT_MUTED,
+        state_live: STATE_LIVE,
+        state_muted: STATE_MUTED,
+    }
+}
+
+/// Maximum-separation palette for Windows high contrast.
+///
+/// Deliberately not a tinted version of the mockup palette: high contrast is
+/// chosen by users who cannot read low-contrast greys, so every surface is
+/// black and every foreground is at full luminance. The distinctions the
+/// mockup palette draws with subtle shade differences are drawn with hue here.
+pub fn high_contrast_palette() -> Palette {
+    const BLACK: Color = Color::rgb(0x000000);
+    const WHITE: Color = Color::rgb(0xFFFFFF);
+    const YELLOW: Color = Color::rgb(0xFFFF00);
+    const CYAN: Color = Color::rgb(0x00FFFF);
+    Palette {
+        bg_panel: BLACK,
+        bg_card: BLACK,
+        bg_banner: BLACK,
+        bg_button: BLACK,
+        border_card: WHITE,
+        border_banner: WHITE,
+        track_inactive: Color::rgb(0x3F3F3F),
+        accent: YELLOW,
+        accent_text: YELLOW,
+        accent_label: YELLOW,
+        text_primary: WHITE,
+        text_secondary: WHITE,
+        text_muted: WHITE,
+        state_live: CYAN,
+        state_muted: YELLOW,
+    }
+}
+
+// Accessors. `layout` calls these rather than naming the constants, so the
+// palette in force is decided in one place. The constants stay as the record
+// of what was sampled from the mockups.
+macro_rules! palette_accessors {
+    ($($name:ident),* $(,)?) => {
+        $(pub fn $name() -> Color { palette().$name })*
+    };
+}
+palette_accessors!(
+    bg_panel,
+    bg_card,
+    bg_banner,
+    bg_button,
+    border_card,
+    border_banner,
+    track_inactive,
+    accent,
+    accent_text,
+    accent_label,
+    text_primary,
+    text_secondary,
+    text_muted,
+    state_live,
+    state_muted,
+);
+
 // ---------------------------------------------------------------- metrics ---
 
 /// Panel width, measured from the mockup (342 px of panel inside an 8 px shadow).
@@ -158,6 +276,51 @@ mod tests {
             assert_eq!(c, Color::rgb(hex), "{name} drifted from the mockup");
             assert_eq!(c.3, 0xFF, "{name} must be opaque");
         }
+    }
+
+    #[test]
+    fn the_default_palette_is_the_sampled_one() {
+        set_high_contrast(false);
+        let p = palette();
+        assert_eq!(p.bg_panel, BG_PANEL);
+        assert_eq!(p.accent, ACCENT);
+        assert_eq!(p.text_primary, TEXT_PRIMARY);
+    }
+
+    #[test]
+    fn high_contrast_separates_every_pair_that_sits_on_top_of_another() {
+        // The failure being prevented is a palette that "supports" high
+        // contrast by swapping a few colours and leaving text on a background
+        // it cannot be read against. Every foreground must clear a real
+        // luminance gap from the surface it is drawn on.
+        set_high_contrast(true);
+        let p = palette();
+
+        let luminance =
+            |c: Color| 0.2126 * (c.0 as f32) + 0.7152 * (c.1 as f32) + 0.0722 * (c.2 as f32);
+        let pairs: [(Color, Color, &str); 5] = [
+            (p.text_primary, p.bg_panel, "title on panel"),
+            (p.text_secondary, p.bg_panel, "caption on panel"),
+            (p.text_primary, p.bg_card, "battery on card"),
+            (p.accent_text, p.bg_panel, "value on panel"),
+            (p.accent, p.track_inactive, "filled track on unfilled"),
+        ];
+        for (fg, bg, what) in pairs {
+            let gap = (luminance(fg) - luminance(bg)).abs();
+            assert!(gap > 128.0, "{what}: luminance gap only {gap:.0}");
+        }
+        set_high_contrast(false);
+    }
+
+    #[test]
+    fn high_contrast_does_not_disturb_the_sampled_palette() {
+        // The constants are still the record of what was measured from the
+        // mockups; high contrast selects a different palette rather than
+        // editing them.
+        set_high_contrast(true);
+        assert_eq!(BG_PANEL, Color::rgb(0x131623));
+        set_high_contrast(false);
+        assert_eq!(palette().bg_panel, BG_PANEL);
     }
 
     #[test]

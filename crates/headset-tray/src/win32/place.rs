@@ -59,6 +59,62 @@ pub fn above_icon(icon: Bounds, work: Bounds, w: i32, h: i32, margin: i32) -> (i
     (x, y)
 }
 
+/// Which screen edge the taskbar is docked to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TaskbarEdge {
+    Bottom,
+    Top,
+    Left,
+    Right,
+}
+
+/// Which screen edge the taskbar is docked to, inferred from the icon.
+///
+/// The taskbar is the gap between the work area and the screen, and the icon
+/// lives in it, so the work-area edge the icon falls outside of is the answer.
+/// No shell API is consulted: `SHAppBarMessage` would give the same result and
+/// this stays testable.
+pub fn taskbar_edge(icon: Bounds, work: Bounds) -> TaskbarEdge {
+    if icon.top >= work.bottom {
+        TaskbarEdge::Bottom
+    } else if icon.bottom <= work.top {
+        TaskbarEdge::Top
+    } else if icon.right <= work.left {
+        TaskbarEdge::Left
+    } else if icon.left >= work.right {
+        TaskbarEdge::Right
+    } else {
+        // Inside the work area: not a real icon rectangle. The cursor fallback
+        // produces this. Bottom is the common case.
+        TaskbarEdge::Bottom
+    }
+}
+
+/// Top-left for a `w` x `h` panel placed clear of the taskbar the icon is in.
+pub fn beside_icon(icon: Bounds, work: Bounds, w: i32, h: i32, margin: i32) -> (i32, i32) {
+    match taskbar_edge(icon, work) {
+        // A horizontal taskbar is what `above_icon` already handles, including
+        // its own top/bottom flip.
+        TaskbarEdge::Bottom | TaskbarEdge::Top => above_icon(icon, work, w, h, margin),
+        edge => {
+            let x = match edge {
+                TaskbarEdge::Left => work.left + margin,
+                _ => work.right - margin - w,
+            };
+            // Vertically centred on the icon, then pulled inside the work area.
+            let centre_y = (icon.top + icon.bottom) / 2;
+            let mut y = centre_y - h / 2;
+            if y + h > work.bottom {
+                y = work.bottom - h;
+            }
+            if y < work.top {
+                y = work.top;
+            }
+            (x, y)
+        }
+    }
+}
+
 /// Top-left for a panel whose height changed to `h`, holding its bottom edge.
 pub fn hold_bottom(current: Bounds, work: Bounds, h: i32) -> (i32, i32) {
     let mut y = current.bottom - h;
@@ -162,6 +218,122 @@ mod tests {
     fn a_panel_taller_than_the_work_area_starts_at_its_top() {
         let (_, y) = above_icon(icon(), primary(), 342, 4000, 8);
         assert_eq!(y, 0, "clamped to the work-area top, never above it");
+    }
+
+    #[test]
+    fn the_taskbar_edge_is_inferred_from_where_the_icon_sits() {
+        // The icon is always in the taskbar, and the taskbar is always the gap
+        // between the work area and the screen. Whichever work-area edge the
+        // icon is outside of is the edge the taskbar is docked to.
+        assert_eq!(taskbar_edge(icon(), primary()), TaskbarEdge::Bottom);
+
+        let work_top = Bounds {
+            left: 0,
+            top: 48,
+            right: 1920,
+            bottom: 1080,
+        };
+        let above = Bounds {
+            left: 1700,
+            top: 12,
+            right: 1724,
+            bottom: 36,
+        };
+        assert_eq!(taskbar_edge(above, work_top), TaskbarEdge::Top);
+
+        let work_left = Bounds {
+            left: 72,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        let at_left = Bounds {
+            left: 24,
+            top: 900,
+            right: 48,
+            bottom: 924,
+        };
+        assert_eq!(taskbar_edge(at_left, work_left), TaskbarEdge::Left);
+
+        let work_right = Bounds {
+            left: 0,
+            top: 0,
+            right: 1848,
+            bottom: 1080,
+        };
+        let at_right = Bounds {
+            left: 1872,
+            top: 900,
+            right: 1896,
+            bottom: 924,
+        };
+        assert_eq!(taskbar_edge(at_right, work_right), TaskbarEdge::Right);
+    }
+
+    #[test]
+    fn an_icon_inside_the_work_area_is_assumed_to_be_a_bottom_taskbar() {
+        // The overflow-flyout fallback synthesises a rectangle from the cursor,
+        // which can be anywhere. Bottom is the overwhelmingly common case and
+        // the one the old code always assumed.
+        let stray = Bounds {
+            left: 900,
+            top: 500,
+            right: 900,
+            bottom: 500,
+        };
+        assert_eq!(taskbar_edge(stray, primary()), TaskbarEdge::Bottom);
+    }
+
+    #[test]
+    fn a_left_taskbar_puts_the_panel_to_its_right() {
+        let work = Bounds {
+            left: 72,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        let icon = Bounds {
+            left: 24,
+            top: 900,
+            right: 48,
+            bottom: 924,
+        };
+        let (x, y) = beside_icon(icon, work, 342, 500, 8);
+        assert_eq!(
+            x,
+            72 + 8,
+            "clear of the taskbar, one margin into the work area"
+        );
+        assert!(y + 500 <= 1080, "bottom edge stays on screen, got y = {y}");
+        assert!(y >= 0, "top edge stays on screen, got y = {y}");
+    }
+
+    #[test]
+    fn a_right_taskbar_puts_the_panel_to_its_left() {
+        let work = Bounds {
+            left: 0,
+            top: 0,
+            right: 1848,
+            bottom: 1080,
+        };
+        let icon = Bounds {
+            left: 1872,
+            top: 900,
+            right: 1896,
+            bottom: 924,
+        };
+        let (x, _) = beside_icon(icon, work, 342, 500, 8);
+        assert_eq!(x, 1848 - 8 - 342, "clear of the taskbar on the other side");
+    }
+
+    #[test]
+    fn a_horizontal_taskbar_still_goes_through_above_icon() {
+        // Same answer as before this task existed: the common case must not
+        // change behaviour.
+        assert_eq!(
+            beside_icon(icon(), primary(), 342, 500, 8),
+            above_icon(icon(), primary(), 342, 500, 8)
+        );
     }
 
     #[test]
