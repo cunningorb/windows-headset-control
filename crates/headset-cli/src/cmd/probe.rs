@@ -2,8 +2,9 @@ use std::time::Duration;
 
 use anyhow::{bail, Result};
 use headset_device::{
-    has_unambiguous_winner, rank_candidates, stable_sort_collections, CollectionInfo, DeviceError,
-    HidBackend, OpenMode,
+    has_unambiguous_winner, is_supported_device, rank_candidates, stable_sort_collections,
+    Candidate, CollectionInfo, DeviceError, HidBackend, OpenMode, SUPPORTED_PRODUCT_IDS,
+    SUPPORTED_VENDOR_ID,
 };
 use headset_protocol::ControlFrame;
 use serde_json::json;
@@ -42,16 +43,58 @@ pub fn run(
     stable_sort_collections(&mut all);
     let ranked = rank_candidates(&all);
 
+    // Positive device identification before selecting anything automatically:
+    // shape-based ranking alone will happily pick an unrelated vendor's HID
+    // collection off the same machine (see docs/device-research.md, "no
+    // known-safe request" blocker, and the Task 10 fix-round finding). An
+    // explicit `--vendor-id`/`--product-id` opts into a specific device;
+    // otherwise selection is scoped to the one device this project supports.
+    // `rank_candidates`'s per-collection score and disqualification do not
+    // depend on what else is in the set, so filtering its already-sorted
+    // output preserves both scores and absolute indices; only the
+    // unambiguous-winner decision needs recomputing, over the scoped subset.
+    let scoped: Vec<Candidate> = ranked
+        .iter()
+        .filter(|c| {
+            let info = &all[c.index];
+            match (args.vendor_id, args.product_id) {
+                (None, None) => is_supported_device(info),
+                _ => {
+                    args.vendor_id.is_none_or(|v| info.vendor_id == v)
+                        && args.product_id.is_none_or(|p| info.product_id == p)
+                }
+            }
+        })
+        .cloned()
+        .collect();
+
     let index = match args.candidate {
         Some(i) => i,
         None => {
-            if !has_unambiguous_winner(&ranked) {
+            if scoped.is_empty() {
+                let wanted = match (args.vendor_id, args.product_id) {
+                    (None, None) => format!(
+                        "vendor {SUPPORTED_VENDOR_ID:#06x}, product in {SUPPORTED_PRODUCT_IDS:#06x?} \
+                         (the only device this project supports)"
+                    ),
+                    (v, p) => format!(
+                        "vendor {}, product {}",
+                        v.map_or("<any>".to_string(), |x| format!("{x:#06x}")),
+                        p.map_or("<any>".to_string(), |x| format!("{x:#06x}"))
+                    ),
+                };
+                bail!(
+                    "no supported device found on this machine (looking for {wanted}); \
+                     re-run `headsetctl list` to see what is attached"
+                );
+            }
+            if !has_unambiguous_winner(&scoped) {
                 bail!(
                     "no unambiguous control candidate; re-run with --candidate <index> \
                      after reviewing `headsetctl list`"
                 );
             }
-            ranked
+            scoped
                 .iter()
                 .find(|c| c.disqualified.is_none())
                 .expect("a winner exists")

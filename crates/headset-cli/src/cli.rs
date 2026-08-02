@@ -63,9 +63,22 @@ pub struct InspectArgs {
 
 #[derive(Args, Debug)]
 pub struct ProbeArgs {
-    /// Candidate index from `headsetctl list`. Defaults to the ranked best.
+    /// Candidate index from `headsetctl list`. Defaults to the ranked best
+    /// among the collections of the one device this project supports.
     #[arg(long)]
     pub candidate: Option<usize>,
+
+    /// Restrict automatic candidate selection to this vendor id, e.g. 0x1532.
+    /// Opts into a specific device in place of the built-in supported-device
+    /// allowlist; has no effect when `--candidate` is also given.
+    #[arg(long, value_parser = parse_u16_id)]
+    pub vendor_id: Option<u16>,
+
+    /// Restrict automatic candidate selection to this product id, e.g. 0x101b.
+    /// Opts into a specific device in place of the built-in supported-device
+    /// allowlist; has no effect when `--candidate` is also given.
+    #[arg(long, value_parser = parse_u16_id)]
+    pub product_id: Option<u16>,
 
     /// Milliseconds to listen for an unsolicited input report.
     #[arg(long, default_value_t = 2000)]

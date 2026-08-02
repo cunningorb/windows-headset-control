@@ -1,5 +1,19 @@
 use crate::model::CollectionInfo;
 
+/// Devices this project has been tested against. Candidate selection is scoped
+/// to these: shape-based ranking alone will happily pick an unrelated vendor's
+/// HID collection, so positive device identification comes first. `0x101B` is
+/// the only product this project has actually been tested against; do not add
+/// `0x0577` or any other id here — `docs/device-research.md` explicitly
+/// refutes that PID for this hardware.
+pub const SUPPORTED_VENDOR_ID: u16 = 0x1532;
+pub const SUPPORTED_PRODUCT_IDS: &[u16] = &[0x101B];
+
+/// True when `c` belongs to a device this project has been tested against.
+pub fn is_supported_device(c: &CollectionInfo) -> bool {
+    c.vendor_id == SUPPORTED_VENDOR_ID && SUPPORTED_PRODUCT_IDS.contains(&c.product_id)
+}
+
 /// One ranked enumeration entry, with the reasoning that produced its score.
 #[derive(Clone, Debug)]
 pub struct Candidate {
@@ -211,5 +225,34 @@ mod tests {
     fn empty_input_yields_no_candidates() {
         assert!(rank_candidates(&[]).is_empty());
         assert!(!has_unambiguous_winner(&[]));
+    }
+
+    #[test]
+    fn supported_device_is_recognized_by_vendor_and_product() {
+        let all = collections();
+        for c in &all {
+            assert!(is_supported_device(c));
+        }
+    }
+
+    #[test]
+    fn unsupported_vendor_is_not_recognized() {
+        let mut c = all_first();
+        c.vendor_id = 0x1770;
+        assert!(!is_supported_device(&c));
+    }
+
+    #[test]
+    fn unsupported_product_is_not_recognized() {
+        let mut c = all_first();
+        c.product_id = 0x0577;
+        assert!(!is_supported_device(&c));
+    }
+
+    fn all_first() -> CollectionInfo {
+        collections()
+            .into_iter()
+            .next()
+            .expect("fixture has collections")
     }
 }

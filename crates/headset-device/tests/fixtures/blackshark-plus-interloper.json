@@ -1,0 +1,62 @@
+{
+  "collections": [
+    {
+      "path": "\\\\?\\hid#vid_1532&pid_101b&mi_05&col01#0&fixture&0&0000",
+      "vendor_id": 5426, "product_id": 4123, "version": 256,
+      "usage_page": 12, "usage": 1,
+      "input_report_len": 2, "output_report_len": 0, "feature_report_len": 0,
+      "product": "BlackShark V3 Pro PS HID", "manufacturer": "Razer Inc",
+      "has_serial": true,
+      "report_items": [
+        { "kind": "input", "report_id": 12, "usage_page": 12, "usage_min": 182, "usage_max": 182, "bit_size": 0, "report_count": 0, "is_button": true }
+      ]
+    },
+    {
+      "path": "\\\\?\\hid#vid_1532&pid_101b&mi_05&col02#0&fixture&0&0001",
+      "vendor_id": 5426, "product_id": 4123, "version": 256,
+      "usage_page": 65299, "usage": 1,
+      "input_report_len": 62, "output_report_len": 62, "feature_report_len": 0,
+      "product": "BlackShark V3 Pro PS HID", "manufacturer": "Razer Inc",
+      "has_serial": true,
+      "report_items": [
+        { "kind": "input", "report_id": 7, "usage_page": 65299, "usage_min": 0, "usage_max": 0, "bit_size": 8, "report_count": 61, "is_button": false },
+        { "kind": "output", "report_id": 6, "usage_page": 65299, "usage_min": 0, "usage_max": 0, "bit_size": 8, "report_count": 61, "is_button": false }
+      ]
+    },
+    {
+      "path": "\\\\?\\hid#vid_1532&pid_101b&mi_05&col03#0&fixture&0&0002",
+      "vendor_id": 5426, "product_id": 4123, "version": 256,
+      "usage_page": 11, "usage": 5,
+      "input_report_len": 2, "output_report_len": 2, "feature_report_len": 0,
+      "product": "BlackShark V3 Pro PS HID", "manufacturer": "Razer Inc",
+      "has_serial": true,
+      "report_items": [
+        { "kind": "input", "report_id": 5, "usage_page": 11, "usage_min": 32, "usage_max": 32, "bit_size": 0, "report_count": 0, "is_button": true },
+        { "kind": "output", "report_id": 5, "usage_page": 8, "usage_min": 42, "usage_max": 42, "bit_size": 0, "report_count": 0, "is_button": true }
+      ]
+    },
+    {
+      "path": "\\\\?\\hid#vid_1532&pid_101b&mi_05&col04#0&fixture&0&0003",
+      "vendor_id": 5426, "product_id": 4123, "version": 256,
+      "usage_page": 65300, "usage": 1,
+      "input_report_len": 64, "output_report_len": 64, "feature_report_len": 0,
+      "product": "BlackShark V3 Pro PS HID", "manufacturer": "Razer Inc",
+      "has_serial": true,
+      "report_items": [
+        { "kind": "input", "report_id": 2, "usage_page": 65300, "usage_min": 0, "usage_max": 0, "bit_size": 8, "report_count": 63, "is_button": false },
+        { "kind": "output", "report_id": 2, "usage_page": 65300, "usage_min": 0, "usage_max": 0, "bit_size": 8, "report_count": 63, "is_button": false }
+      ]
+    },
+    {
+      "path": "\\\\?\\hid#vid_1770&pid_ff00#0&fixture&0&0004",
+      "vendor_id": 6000, "product_id": 65280, "version": 272,
+      "usage_page": 65440, "usage": 1,
+      "input_report_len": 0, "output_report_len": 0, "feature_report_len": 257,
+      "product": "Unrelated EC USB", "manufacturer": "Some Other Vendor",
+      "has_serial": true,
+      "report_items": [
+        { "kind": "feature", "report_id": 1, "usage_page": 65440, "usage_min": 0, "usage_max": 0, "bit_size": 8, "report_count": 256, "is_button": false }
+      ]
+    }
+  ]
+}
