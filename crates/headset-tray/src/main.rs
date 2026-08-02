@@ -69,19 +69,17 @@ fn run_install() {
 fn run_uninstall() {
     use headset_tray::install;
     match install::uninstall() {
-        Ok(exe) => {
-            let where_ = exe
+        Ok(dir) => {
+            let where_ = dir
                 .as_ref()
-                .and_then(|p| p.parent())
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "the install folder".into());
             report(
                 "Headset Tray uninstalled",
                 &format!(
-                    "Startup entry and uninstall registration removed.\n\n\
-                     The program file itself is still in:\n{where_}\n\n\
-                     Windows will not let a running program delete itself, so \
-                     remove that folder manually if you want it gone.",
+                    "Removed the startup entry, the uninstall registration, and \
+                     stopped the running tray.\n\n{where_}\nis being deleted now \
+                     - a moment is needed for this program to exit first.",
                 ),
             );
         }
