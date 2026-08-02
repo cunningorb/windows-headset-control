@@ -5,4 +5,19 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[[bin]]
+name = "headset-tray"
+path = "src/main.rs"
+
+[lib]
+name = "headset_tray"
+path = "src/lib.rs"
+
 [dependencies]
+headset-device = { path = "../headset-device" }
+headset-protocol = { path = "../headset-protocol" }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true }
