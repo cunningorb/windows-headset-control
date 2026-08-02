@@ -1,36 +1,21 @@
 # windows-headset-control
 
-Experimental native Windows HID controller for supported wireless headset settings.
+Control your Razer BlackShark V3 Pro headset from the Windows tray, without running Synapse.
 
-**Status:** experimental. It works on the author's hardware and is tested against a
-fixture-driven fake device, but it speaks a protocol reconstructed by observation rather
-than from documentation. Expect rough edges, and read the risk note below before running
-it against a headset you care about.
+<img src="docs/images/panel.png" alt="The tray panel: battery, microphone state, game/chat balance, and noise control" width="342">
 
-## What this is
-
-A user-mode Windows utility that reads and controls settings of a Razer BlackShark V3 Pro
-wireless headset over its vendor HID interface — battery, sidetone, game/chat balance,
-microphone mute state, and noise control — from a tray application and a command line.
+Battery, microphone mute, sidetone, game/chat balance, and noise cancellation — in a panel
+that opens from the notification area and closes when you click away. It uses around 30 MB
+of memory and starts with Windows if you let it.
 
 - Runs as a normal user. No administrator rights.
 - Installs no driver and no service.
-- Reads and writes no firmware.
-- Makes no network requests and collects no telemetry.
+- Never touches firmware.
+- No network access and no telemetry, ever.
 
-**The set of commands it can send is deliberately narrow.** Every command identifier the
-project can put on the wire was observed there while the manufacturer's own software drove
-this hardware; the allowlists in `headset-protocol` contain nothing else, so a speculative
-or brute-forced identifier has no path to the device. `docs/device-research.md` records the
-evidence for each one, and ten observed-but-unidentified parameters remain deliberately
-unnamed rather than guessed at.
+## Will it work with my headset?
 
-`list`, `inspect`, and `probe` are read-only. `probe` opens the device with read-only
-access rights, so that is enforced by Windows rather than by the absence of a call.
-
-## Supported hardware
-
-One device:
+**One model, and only one:**
 
 | | |
 | --- | --- |
@@ -38,84 +23,69 @@ One device:
 | USB vendor id | `0x1532` |
 | USB product id | `0x101B` |
 
-**Other products are not supported and are not assumed compatible**, including other
-BlackShark models. The protocol here was reconstructed by watching this specific device;
-a different product id is a different device until someone captures it and records the
-evidence. See `docs/device-research.md`.
+Other products **are not supported**, including other BlackShark models. This talks to the
+headset in a language worked out by watching it, not from documentation, so a different
+product id is a different device until somebody does that work again.
 
-To check what you have:
+Not sure what you have? Install it and run `headsetctl list --vendor-id 0x1532`. If that
+prints nothing, this can't talk to your headset.
 
-```
-> headsetctl list --vendor-id 0x1532
-```
+## Install
 
-If that prints nothing, this project cannot talk to your headset.
+**[Download the latest release](https://github.com/cunningorb/windows-headset-control/releases/latest)**
+and run the setup executable. It installs for you only, adds a Start menu entry, and offers
+to start with Windows.
 
-## Installing
-
-Download the setup executable from the
-[latest release](https://github.com/cunningorb/windows-headset-control/releases/latest)
-and run it. It installs for your user only — no administrator rights, no driver, no
-service — adds a Start menu entry, and offers to start the tray when you sign in.
-
-**Windows will warn you.** The installer is not code-signed, so SmartScreen shows
-"Windows protected your PC". Choose **More info**, then **Run anyway**. Signing is tracked
-in `docs/release-signing.md`.
+**Windows will warn you.** The installer isn't code-signed, so SmartScreen shows "Windows
+protected your PC". Choose **More info**, then **Run anyway**.
 
 To remove it: Settings → Installed apps → Headset Tray → Uninstall.
 
-### From source
+## Using it
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the toolchain requirements, which are more
-specific than usual, then:
+Click the tray icon to open the panel.
 
-```powershell
-.\build-installer.ps1        # produces dist\HeadsetTray-<version>-setup.exe
-```
+**Battery and microphone** are shown at the top. The mic reads `MUTED` if *either* the
+headset's own switch or Windows is muting you, because either one silences you — clicking
+it toggles the Windows side, since no software can move a physical switch.
 
-or put a build in place without packaging it:
+**Sidetone** (0–15) is how much of your own voice you hear. **Game/chat balance** (0–20)
+mixes the two audio channels the headset presents. The button switches which one the slider
+drives; drag it and let go, and the change is sent once.
 
-```powershell
-cargo build --release
-.\target\release\headset-tray.exe --install
-```
+**Noise control** is off, ANC, or ambient.
 
-Copies itself to `%LOCALAPPDATA%\Programs\HeadsetTray`, starts at sign-in, and registers
-an Add/Remove Programs entry so it uninstalls like any other application. Per-user
-throughout: no administrator rights, no service, no scheduled task, nothing written to
-`HKEY_LOCAL_MACHINE`. `--uninstall` reverses it, and so does Windows Settings.
+<img src="docs/images/panel-noise.png" alt="Ambient mode selected, with the ANC level retained" width="342">
 
-The tray's **Settings** submenu toggles "Run on Windows startup" and "Warn when Synapse is
-running". The startup checkbox reads the same registry value Windows reads at sign-in, so
-disabling the entry from Task Manager's Startup tab is reflected there rather than
-contradicted.
+ANC has four levels. Ambient has none — so the level track goes quiet in that mode, but
+keeps showing where ANC will land when you switch back, because the headset remembers.
 
-## The tray
+**Nothing on screen is a guess.** A value the headset refuses shows as `--`, never as a
+number. Losing the wireless link clears the readings rather than leaving stale ones up. And
+after every change, the tray asks the headset what it actually holds — so if it disagrees
+with what you asked for, you see the truth.
 
-`headset-tray.exe` shows battery, microphone mute state, sliders for sidetone (0–15) and
-game/chat balance (0–20), and noise control: off, ANC, or ambient, with an ANC level of
-1–4. The level track is live only in ANC — ambient has no level — but stays visible in the
-other modes, because the headset retains the level and returns to it.
+Right-click the icon for Refresh and Exit. The gear opens settings: start with Windows, and
+whether to warn you when Synapse is running (it can fight this app for the same settings).
 
-State is never cached authoritatively: a value the device refuses shows as unknown rather
-than as a number, and losing the wireless link clears the readings instead of leaving
-stale ones on screen. Mute status is the union of the headset's hardware switch and the
-Windows capture endpoint, because audio is silenced if either is set — clicking it toggles
-only the endpoint, since no software can move a hardware switch.
+## Good to know
 
-## Commands
+It's **alpha**. It works on the author's hardware and is covered by a few hundred tests,
+but it speaks a reconstructed protocol and has been used on exactly one headset.
 
-`headsetctl` is a Windows-only command-line tool. Every command accepts `--json` for
-machine-readable output and `--include-sensitive` to reveal device paths (redacted by
-default).
+It sends vendor-specific commands to hardware. It performs no firmware access of any kind,
+and every command it can send was observed being sent by Razer's own software — but no
+warranty is offered. Running it may void your hardware warranty.
 
-| Command | Writes to the device |
-| --- | --- |
-| `list`, `inspect`, `probe`, `watch` | no |
-| `get <name>` | sends a read request |
-| `set <name> <value>` | yes |
-| `noise` | reads; writes only when given `--mode` or `--level` |
-| `param get/set <id>` | yes, allowlisted identifiers only |
+Some things you might expect are **not** here, because they aren't the headset's to
+control: volume and software mic mute are handled by Windows, and Synapse's audio
+enhancements (bass boost, voice clarity, and so on) are processed on your PC by THX rather
+than on the headset. There is nothing for this app to send.
+
+## Command line
+
+`headsetctl` ships alongside the tray. Every command takes `--json`, and
+`--include-sensitive` to reveal device paths (redacted by default).
 
 ```
 > headsetctl get battery
@@ -128,79 +98,79 @@ noise-cancellation: anc level 4
 noise-cancellation: anc level 2
 > headsetctl noise --mode ambient   # ambient has no level; the ANC level is retained
 noise-cancellation: ambient (anc level 2)
+```
+
+| Command | Writes to the device |
+| --- | --- |
+| `list`, `inspect`, `probe`, `watch` | no |
+| `get <name>` | sends a read request |
+| `set <name> <value>` | yes |
+| `noise` | reads; writes only when given `--mode` or `--level` |
+| `param get/set <id>` | yes, allowlisted identifiers only |
+
+`get` reports `unavailable` rather than a number when the headset refuses a read — which is
+what happens when it's switched off. `set` re-reads afterwards and tells you what the device
+actually holds, because a write being acknowledged is not evidence it took effect.
+
+`list` enumerates every HID collection on the machine and names the best control candidate.
+`inspect` opens one with no I/O rights and prints its report descriptor. `probe` listens for
+an unsolicited report without sending anything; silence is a normal result, since the device
+only speaks when something changes.
+
+```
 > headsetctl param get 0x2c        # observed but unidentified; no meaning is claimed
 0x2c: 0f
 ```
 
-`get` reports `unavailable` rather than a number when the device refuses a read — which is
-what happens when the headset is powered off. `set` re-reads the parameter afterwards and
-reports what the device actually holds, because a write being acknowledged is not evidence
-that the value changed.
+## How it works
 
-### `list`
+The headset speaks a proprietary HID protocol with no public documentation. This project
+worked it out by capturing Razer's own software driving the hardware, and
+[`docs/device-research.md`](docs/device-research.md) records the evidence for every byte:
+what was sent, what came back, under what conditions.
 
-Enumerates every present HID collection on the machine — not just this project's
-supported headset — and, if exactly one collection belonging to a supported device
-scores highest, names it the best control candidate.
+**The project can only send identifiers it has actually seen on the wire.** They live in
+allowlists in `headset-protocol`, which cannot encode anything else — so a guessed or
+brute-forced command has no path to your device from anywhere in the codebase. Ten observed
+parameters whose meaning was never established stay deliberately unnamed rather than being
+given plausible-sounding labels.
 
-```
-> headsetctl list --vendor-id 0x1532
-[13] BlackShark V3 Pro PS HID
-     vendor/product : 0x1532 / 0x101b
-     usage page/usg : 0xff14 / 0x0001
-     reports in/out/feat : 64 / 64 / 0
-     candidate      : score 174 (vendor-defined usage page 0xff14; declared report width 64 bytes; bidirectional: input report width 64 bytes)
-...
-Best control candidate: index 13
-```
+No code, comments, or command tables were taken from any other project.
+[`docs/clean-room-notes.md`](docs/clean-room-notes.md) records what was consulted and on
+what terms, including a hypothesis that turned out to be wrong.
 
-### `inspect`
+Further reading: [`docs/architecture.md`](docs/architecture.md) for how the crates fit
+together, [`docs/threat-model.md`](docs/threat-model.md) for the security posture, and
+[`docs/history/`](docs/history/) for the design record.
 
-Opens one collection, by the absolute index reported by `list`, with zero I/O access
-rights and reports its parsed report descriptor.
+## Building from source
 
-```
-> headsetctl inspect --path-index 13
-BlackShark V3 Pro PS HID
-  usage page/usg : 0xff14 / 0x0001
-  reports in/out/feat : 64 / 64 / 0
-  opened for I/O : no (descriptor access only)
-  Input report ids : 0x02
-  Output report ids : 0x02
+Windows only, and the toolchain requirements are more specific than usual — see
+[`CONTRIBUTING.md`](CONTRIBUTING.md) before you start.
+
+```powershell
+.\build-installer.ps1        # produces dist\HeadsetTray-<version>-setup.exe
 ```
 
-### `probe`
+Or put a build in place without packaging it:
 
-Opens the selected control candidate for reading only and listens for an unsolicited
-input report within a bounded window. Sends nothing to the device; a silent result is a
-normal, expected outcome: the device pushes reports when something changes, and nothing
-may have changed during the window.
+```powershell
+cargo build --release
+.\target\release\headset-tray.exe --install
+```
 
-```
-> headsetctl probe
-probe operation : PassiveListen
-wrote to device : no
-candidate       : [13] usage page 0xff14
-result          : silent (no unsolicited report)
-```
+Contributions are welcome; [`CONTRIBUTING.md`](CONTRIBUTING.md) explains the rules that
+keep the protocol work honest, and there are a few of them.
 
 ## Non-affiliation
 
 This is an unofficial community interoperability utility. It is not affiliated with,
-authorized by, endorsed by, or sponsored by Razer Inc. or any other manufacturer.
-Product names are used only to describe hardware compatibility.
+authorized by, endorsed by, or sponsored by Razer Inc. or any other manufacturer. Product
+names are used only to describe hardware compatibility.
 
-Razer, BlackShark, and Synapse are trademarks of Razer Inc. They are used here only to
-identify the hardware this utility interoperates with. This project's licence grants no
-rights in any trademark.
-
-## Risk
-
-This utility sends vendor-specific commands to hardware, using a protocol reconstructed by
-observation rather than from a specification. It performs no firmware access of any kind,
-and every command it can send was observed being sent by the manufacturer's own software —
-but no warranty is offered, by this project's licence or otherwise. Running it may void
-your hardware warranty. Use it at your own risk.
+Razer, BlackShark, Synapse, and THX are trademarks of their respective owners. They are used
+here only to identify the hardware this utility interoperates with. This project's licence
+grants no rights in any trademark.
 
 ## Licence
 
@@ -211,8 +181,6 @@ Licensed under either of
 - MIT licence ([`LICENSE-MIT`](LICENSE-MIT) or <https://opensource.org/licenses/MIT>)
 
 at your option.
-
-### Contribution
 
 Unless you explicitly state otherwise, any contribution intentionally submitted for
 inclusion in the work by you, as defined in the Apache-2.0 licence, shall be dual licensed
