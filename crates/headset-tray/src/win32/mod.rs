@@ -39,10 +39,10 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
     DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW, LoadCursorW,
-    PostMessageW, PostQuitMessage, RegisterClassW, SetForegroundWindow, TrackPopupMenu,
-    TranslateMessage, HICON, ICONINFO, IDC_ARROW, MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN,
-    TPM_RIGHTALIGN, WINDOW_EX_STYLE, WM_ACTIVATE, WM_APP, WM_CLOSE, WM_COMMAND, WM_DESTROY,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPED,
+    PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow,
+    TrackPopupMenu, TranslateMessage, HICON, ICONINFO, IDC_ARROW, MF_SEPARATOR, MF_STRING, MSG,
+    TPM_BOTTOMALIGN, TPM_RIGHTALIGN, WINDOW_EX_STYLE, WM_ACTIVATE, WM_APP, WM_CLOSE, WM_COMMAND,
+    WM_DESTROY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPED,
 };
 
 // Not part of any public API: these are the tray's own window plumbing, and
@@ -59,6 +59,14 @@ use headset_protocol::{NoiseControl, NoiseMode};
 const WM_TRAY: u32 = WM_APP + 1;
 /// Posted by the worker thread when state changed.
 pub const WM_STATE: u32 = WM_APP + 2;
+
+/// The shell's "I have restarted, re-add your icon" broadcast.
+///
+/// Registered at runtime rather than being a constant: `RegisterWindowMessageW`
+/// allocates the value, and every process that registers the same string gets
+/// the same number. Zero means registration failed, which must never match an
+/// incoming message.
+static TASKBAR_CREATED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 const ID_EXIT: usize = 1;
 const ID_MUTE: usize = 2;
@@ -183,6 +191,13 @@ pub fn run_ui_with<F: FnOnce(isize)>(
             None,
         )?;
 
+        // Registered before the icon is added: if the shell restarts between the
+        // two, the broadcast still has somewhere to land.
+        TASKBAR_CREATED.store(
+            RegisterWindowMessageW(w!("TaskbarCreated")),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+
         let icon = build_icon()?;
         let mut nid = NOTIFYICONDATAW {
             cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
@@ -259,6 +274,26 @@ fn refresh_tray(ctx: &mut Ctx) {
     }
 }
 
+/// Re-registers the notification icon after the shell restarted.
+///
+/// The previous icon was destroyed with the old taskbar, so this is `NIM_ADD`
+/// and not `NIM_MODIFY`; modifying an icon the shell no longer knows about
+/// fails silently and leaves the tray empty.
+fn readd_icon(ctx: &mut Ctx) {
+    unsafe {
+        // Delete first, ignoring failure. If the shell somehow does still hold
+        // the icon, adding a second one would leave a duplicate that no message
+        // ever reaches.
+        let _ = Shell_NotifyIconW(NIM_DELETE, &ctx.nid);
+        if Shell_NotifyIconW(NIM_ADD, &ctx.nid).as_bool() {
+            tracing::info!("re-added the tray icon after a shell restart");
+        } else {
+            tracing::error!("could not re-add the tray icon after a shell restart");
+        }
+    }
+    refresh_tray(ctx);
+}
+
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_TRAY => {
@@ -327,6 +362,17 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 }
             });
             PostQuitMessage(0);
+            LRESULT(0)
+        }
+        // The shell restarted and took every tray icon with it. Re-register, and
+        // drop the panel: it was anchored to an icon that no longer exists.
+        m if m != 0 && m == TASKBAR_CREATED.load(std::sync::atomic::Ordering::Relaxed) => {
+            with_ctx(|ctx| {
+                if ctx.panel_visible {
+                    hide_panel(ctx);
+                }
+                readd_icon(ctx);
+            });
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wp, lp),
