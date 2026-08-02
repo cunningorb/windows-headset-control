@@ -163,6 +163,24 @@ impl SliderParam {
     }
 }
 
+/// Which value the slider should draw.
+///
+/// `drag` is a live drag in progress. `pending` is a value already committed to
+/// the device but not yet confirmed by the read-back that follows every write —
+/// it is tagged with the parameter it belongs to, because one slider serves two
+/// parameters and the switcher can be used while a write is in flight.
+///
+/// `None` means "use whatever the device reports". Returning `None` while a
+/// write is outstanding is what made the knob jump back to its old position on
+/// release and then forward again a beat later.
+pub fn slider_preview(
+    param: SliderParam,
+    drag: Option<u8>,
+    pending: Option<(SliderParam, u8)>,
+) -> Option<u8> {
+    drag.or_else(|| pending.filter(|(p, _)| *p == param).map(|(_, v)| v))
+}
+
 /// The value text shown to the right of the switcher, exactly as the mockups
 /// render it.
 pub fn format_value(param: SliderParam, value: Option<u8>) -> String {
@@ -1292,6 +1310,58 @@ mod tests {
         assert_eq!(format_value(GameChat, Some(3)), "Chat +7");
         assert_eq!(format_value(Sidetone, Some(0)), "Off");
         assert_eq!(format_value(Sidetone, Some(14)), "14");
+    }
+
+    #[test]
+    fn a_released_slider_keeps_showing_where_it_was_released() {
+        // The bug: releasing the knob cleared the preview, so the panel fell
+        // back to the device's value - which is still the old one, because the
+        // write has not even been sent yet. The knob visibly jumped back to
+        // where it started and only reached the released position when the
+        // read-back landed, 250 ms per exchange later.
+        assert_eq!(
+            slider_preview(
+                SliderParam::Sidetone,
+                None,
+                Some((SliderParam::Sidetone, 12))
+            ),
+            Some(12),
+            "a committed value must stay on screen until the device answers"
+        );
+    }
+
+    #[test]
+    fn a_live_drag_wins_over_a_value_still_being_confirmed() {
+        // Grabbing the knob again before the previous write is confirmed: the
+        // hand beats the stale commitment.
+        assert_eq!(
+            slider_preview(
+                SliderParam::GameChat,
+                Some(3),
+                Some((SliderParam::GameChat, 17))
+            ),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn a_pending_value_is_not_shown_against_the_other_parameter() {
+        // One slider serves two parameters, and the switcher can be pressed
+        // while a write is in flight. Showing a pending sidetone value on the
+        // game/chat track would draw a number the device never reported for it.
+        assert_eq!(
+            slider_preview(
+                SliderParam::GameChat,
+                None,
+                Some((SliderParam::Sidetone, 12))
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn with_nothing_in_flight_the_device_value_is_used() {
+        assert_eq!(slider_preview(SliderParam::Sidetone, None, None), None);
     }
 
     #[test]
