@@ -44,6 +44,31 @@ $env:HEADSET_HARDWARE_TESTS = "1"
 cargo test -p headset-device -- --ignored
 ```
 
+### Installing a local build
+
+`headset-tray.exe --install` copies the executable to `%LOCALAPPDATA%\Programs\HeadsetTray`,
+adds a Start menu shortcut, and sets the run-at-sign-in value. It deliberately does **not**
+register in Add/Remove Programs — that belongs to the Inno installer, and two things
+writing that key is how a stale entry pointing at a deleted file happens.
+
+`--uninstall` reverses exactly that, and leaves an Inno-made installation alone. Remove one
+of those through Settings → Installed apps.
+
+To build the setup executable, install
+[Inno Setup](https://jrsoftware.org/isinfo.php) and run `.\build-installer.ps1`.
+
+### Changing the icon
+
+The headset is drawn by `ui::icon::icon_pixels`, not stored as an image. If you change it,
+regenerate the committed `.ico` and update the pinned pixel counts:
+
+```powershell
+cargo run -p headset-tray -- --export-icon crates\headset-tray\assets\headset.ico
+```
+
+A test compares the committed file against a fresh generation, so forgetting this fails the
+build rather than shipping an icon that disagrees with the tray.
+
 To see the tray panel without a headset:
 
 ```powershell

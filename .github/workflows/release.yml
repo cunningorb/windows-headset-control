@@ -1,0 +1,47 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add x86_64-pc-windows-gnu
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build and package
+        shell: pwsh
+        run: .\build-installer.ps1
+
+      - name: Publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $asset = (Get-ChildItem dist\*-setup.exe | Select-Object -First 1).FullName
+          if (-not $asset) { throw "no setup executable was produced" }
+          $notes = @"
+          Unsigned installer: Windows SmartScreen will warn. Choose **More info**, then **Run anyway**.
+
+          Installs for your user only - no administrator rights, no driver, no service.
+          See CHANGELOG.md for what changed.
+          "@
+          # Anything with a hyphen is a semver pre-release: -alpha, -beta, -rc.
+          if ($tag -match '-') {
+            gh release create $tag $asset --title $tag --notes $notes --prerelease
+          } else {
+            gh release create $tag $asset --title $tag --notes $notes
+          }

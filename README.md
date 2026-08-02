@@ -53,10 +53,27 @@ If that prints nothing, this project cannot talk to your headset.
 
 ## Installing
 
-There are no prebuilt binaries yet: releases will be signed, and the signing setup
-(`docs/release-signing.md`) is not in place. Until then, build from source — see
-[`CONTRIBUTING.md`](CONTRIBUTING.md) for the toolchain requirements, which are more
-specific than usual.
+Download the setup executable from the
+[latest release](https://github.com/cunningorb/windows-headset-control/releases/latest)
+and run it. It installs for your user only — no administrator rights, no driver, no
+service — adds a Start menu entry, and offers to start the tray when you sign in.
+
+**Windows will warn you.** The installer is not code-signed, so SmartScreen shows
+"Windows protected your PC". Choose **More info**, then **Run anyway**. Signing is tracked
+in `docs/release-signing.md`.
+
+To remove it: Settings → Installed apps → Headset Tray → Uninstall.
+
+### From source
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the toolchain requirements, which are more
+specific than usual, then:
+
+```powershell
+.\build-installer.ps1        # produces dist\HeadsetTray-<version>-setup.exe
+```
+
+or put a build in place without packaging it:
 
 ```powershell
 cargo build --release

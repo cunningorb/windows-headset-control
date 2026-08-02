@@ -917,64 +917,7 @@ unsafe fn show_menu(hwnd: HWND, ctx: &Ctx) {
 
 unsafe fn build_icon() -> windows::core::Result<HICON> {
     const N: usize = 32;
-    let mut shape = [false; N * N];
-
-    let put = |shape: &mut [bool; N * N], x: i32, y: i32| {
-        if (0..N as i32).contains(&x) && (0..N as i32).contains(&y) {
-            shape[y as usize * N + x as usize] = true;
-        }
-    };
-
-    // Headband: an arc centred low so the band sits across the top.
-    let (cx, cy) = (16.0f32, 19.0f32);
-    for y in 0..N as i32 {
-        for x in 0..N as i32 {
-            let dx = x as f32 + 0.5 - cx;
-            let dy = y as f32 + 0.5 - cy;
-            let r = (dx * dx + dy * dy).sqrt();
-            if (10.5..=13.5).contains(&r) && dy < 0.0 {
-                put(&mut shape, x, y);
-            }
-        }
-    }
-    // Ear cups.
-    for y in 15..27 {
-        for x in 0..N as i32 {
-            let left = (3..=8).contains(&x);
-            let right = (23..=28).contains(&x);
-            // Round the vertical ends slightly.
-            let end = y == 15 || y == 26;
-            if (left || right) && !(end && (x == 3 || x == 8 || x == 23 || x == 28)) {
-                put(&mut shape, x, y);
-            }
-        }
-    }
-
-    // BGRA, straight alpha. Outline any transparent pixel that touches the
-    // shape, so the glyph reads on a light taskbar as well as a dark one.
-    let fill: u32 = 0xFF_F0F0F0;
-    let outline: u32 = 0xFF_1A1A1A;
-    let mut pixels = vec![0u32; N * N];
-    for y in 0..N as i32 {
-        for x in 0..N as i32 {
-            let i = y as usize * N + x as usize;
-            if shape[i] {
-                pixels[i] = fill;
-                continue;
-            }
-            let touches = (-1..=1).any(|dy| {
-                (-1..=1).any(|dx| {
-                    let (nx, ny) = (x + dx, y + dy);
-                    (0..N as i32).contains(&nx)
-                        && (0..N as i32).contains(&ny)
-                        && shape[ny as usize * N + nx as usize]
-                })
-            });
-            if touches {
-                pixels[i] = outline;
-            }
-        }
-    }
+    let pixels = crate::ui::icon::icon_pixels(N);
 
     let color: HBITMAP = CreateBitmap(
         N as i32,

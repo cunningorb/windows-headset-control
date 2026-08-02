@@ -1,10 +1,10 @@
 //! Self-installation.
 //!
-//! The binary installs itself rather than shipping a separate installer: the
-//! phase's footprint rule is zero new dependencies, and an MSI would mean a WiX
-//! build toolchain. `--install` copies the running executable into
-//! `%LOCALAPPDATA%\Programs\HeadsetTray`, enables logon startup, and registers
-//! an Add/Remove Programs entry so it uninstalls like any other application.
+//! `--install` copies the running executable into
+//! `%LOCALAPPDATA%\Programs\HeadsetTray`, enables logon startup, and creates a
+//! Start menu shortcut. It is a developer shortcut for putting a local build in
+//! place; the Inno setup executable is what users run, and it alone owns the
+//! Add/Remove Programs entry.
 //!
 //! Per-user throughout. Nothing here writes to `HKEY_LOCAL_MACHINE`, installs a
 //! service or driver, or requires elevation — consistent with the `asInvoker`
@@ -13,20 +13,8 @@
 use std::path::PathBuf;
 
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::ERROR_SUCCESS;
-use windows::Win32::System::Registry::{
-    RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegSetValueExW, HKEY, HKEY_CURRENT_USER,
-    KEY_READ, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ,
-};
 
 use crate::settings::{self, APP_NAME};
-
-const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\HeadsetTray";
-const DISPLAY_NAME: &str = "Headset Tray";
-
-fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(std::iter::once(0)).collect()
-}
 
 /// `%LOCALAPPDATA%\Programs\HeadsetTray`.
 pub fn install_dir() -> Option<PathBuf> {
@@ -51,6 +39,7 @@ pub enum InstallError {
     NoLocalAppData,
     Io(std::io::Error),
     Registry(&'static str),
+    Shortcut(String),
 }
 
 impl std::fmt::Display for InstallError {
@@ -59,12 +48,73 @@ impl std::fmt::Display for InstallError {
             InstallError::NoLocalAppData => write!(f, "LOCALAPPDATA is not set"),
             InstallError::Io(e) => write!(f, "{e}"),
             InstallError::Registry(what) => write!(f, "could not write {what} to the registry"),
+            InstallError::Shortcut(e) => write!(f, "could not create the Start menu shortcut: {e}"),
         }
     }
 }
 
-/// Copies this executable into the install directory, enables startup, and
-/// registers for Add/Remove Programs.
+/// Where the Start menu entry goes. Per-user: the all-users Start menu needs
+/// administrator rights, which this project never asks for.
+pub fn start_menu_shortcut() -> Option<PathBuf> {
+    let appdata = std::env::var_os("APPDATA")?;
+    Some(
+        PathBuf::from(appdata)
+            .join("Microsoft")
+            .join("Windows")
+            .join("Start Menu")
+            .join("Programs")
+            .join("Headset Tray.lnk"),
+    )
+}
+
+/// Creates the Start menu shortcut pointing at `exe`.
+///
+/// No icon is specified: the shortcut inherits the executable's own icon
+/// resource, so there is one icon to keep current rather than two.
+fn create_shortcut(exe: &std::path::Path) -> Result<(), InstallError> {
+    use windows::core::{Interface, HSTRING};
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, IPersistFile, CLSCTX_INPROC_SERVER,
+        COINIT_APARTMENTTHREADED,
+    };
+    use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
+
+    let Some(dest) = start_menu_shortcut() else {
+        return Ok(());
+    };
+    if let Some(parent) = dest.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    unsafe {
+        // --install runs before any window exists, so this thread has no
+        // apartment yet. Harmless if one is already initialised.
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)
+            .map_err(|e| InstallError::Shortcut(e.to_string()))?;
+        link.SetPath(&HSTRING::from(exe.as_os_str()))
+            .map_err(|e| InstallError::Shortcut(e.to_string()))?;
+        link.SetDescription(&HSTRING::from("Headset settings in the notification area"))
+            .map_err(|e| InstallError::Shortcut(e.to_string()))?;
+        if let Some(dir) = exe.parent() {
+            let _ = link.SetWorkingDirectory(&HSTRING::from(dir.as_os_str()));
+        }
+        let file: IPersistFile = link
+            .cast()
+            .map_err(|e| InstallError::Shortcut(e.to_string()))?;
+        file.Save(&HSTRING::from(dest.as_os_str()), true)
+            .map_err(|e| InstallError::Shortcut(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// Copies this executable into the install directory, enables startup, and adds
+/// a Start menu shortcut.
+///
+/// A developer shortcut for putting a local build in place. It deliberately
+/// does **not** register in Add/Remove Programs: that entry belongs to the Inno
+/// installer, and two things writing the same key is how a stale entry pointing
+/// at a deleted file happens.
 ///
 /// Returns the installed path. Safe to run again over an existing install: it
 /// is how an upgrade is performed.
@@ -92,12 +142,16 @@ pub fn install() -> Result<PathBuf, InstallError> {
     if !settings::set_run_on_startup(true, &target) {
         return Err(InstallError::Registry("the startup entry"));
     }
-    register_uninstall(&target)?;
+    create_shortcut(&target)?;
+    // Deliberately no Add/Remove Programs registration. That entry belongs to
+    // the Inno installer, which has its own uninstaller; two things writing the
+    // same key is how a stale entry pointing at a deleted file happens. See
+    // docs/history/specs/2026-08-02-installer-and-icon-design.md.
     Ok(target)
 }
 
-/// Removes the startup entry, the Add/Remove Programs entry, the running tray,
-/// and the install directory.
+/// Removes the startup entry, the Start menu shortcut, the running tray, and
+/// the install directory — exactly what `install()` creates, and nothing else.
 ///
 /// Windows will not let a process delete its own image, and `--uninstall` is
 /// normally run *from* the installed copy. Rather than leave the folder behind
@@ -109,11 +163,14 @@ pub fn uninstall() -> Result<Option<PathBuf>, InstallError> {
     if !settings::set_run_on_startup(false, &PathBuf::new()) {
         return Err(InstallError::Registry("the startup entry"));
     }
-    let status = unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, PCWSTR(wide(UNINSTALL_KEY).as_ptr())) };
-    // Already absent is success: uninstalling twice must not be an error.
-    if status != ERROR_SUCCESS {
-        tracing::debug!("uninstall key absent or not removable");
+    if let Some(lnk) = start_menu_shortcut() {
+        let _ = std::fs::remove_file(lnk);
     }
+    // The Add/Remove Programs entry is deliberately NOT removed here. It belongs
+    // to the Inno installer, which has its own uninstaller; deleting it would
+    // strand an installation this path did not create. `--uninstall` is the
+    // inverse of `--install`, not a general uninstaller — an installation made
+    // by the setup executable is removed through Settings > Installed apps.
 
     close_running_tray();
     if let Some(d) = dir.as_ref() {
@@ -178,59 +235,6 @@ fn schedule_directory_removal(dir: &std::path::Path) {
         .spawn();
 }
 
-fn set_uninstall_string(key: HKEY, name: &str, data: &str) -> Result<(), InstallError> {
-    let w = wide(data);
-    let bytes = unsafe { std::slice::from_raw_parts(w.as_ptr() as *const u8, w.len() * 2) };
-    let status =
-        unsafe { RegSetValueExW(key, PCWSTR(wide(name).as_ptr()), 0, REG_SZ, Some(bytes)) };
-    if status == ERROR_SUCCESS {
-        Ok(())
-    } else {
-        Err(InstallError::Registry("an uninstall entry value"))
-    }
-}
-
-fn register_uninstall(exe: &std::path::Path) -> Result<(), InstallError> {
-    let mut key = HKEY::default();
-    let status = unsafe {
-        RegCreateKeyExW(
-            HKEY_CURRENT_USER,
-            PCWSTR(wide(UNINSTALL_KEY).as_ptr()),
-            0,
-            PCWSTR::null(),
-            REG_OPTION_NON_VOLATILE,
-            KEY_READ | KEY_WRITE,
-            None,
-            &mut key,
-            None,
-        )
-    };
-    if status != ERROR_SUCCESS {
-        return Err(InstallError::Registry("the uninstall key"));
-    }
-    let result = (|| {
-        set_uninstall_string(key, "DisplayName", DISPLAY_NAME)?;
-        set_uninstall_string(key, "DisplayVersion", env!("CARGO_PKG_VERSION"))?;
-        set_uninstall_string(key, "Publisher", "windows-headset-control")?;
-        set_uninstall_string(
-            key,
-            "UninstallString",
-            &format!("\"{}\" --uninstall", exe.display()),
-        )?;
-        set_uninstall_string(key, "DisplayIcon", &exe.display().to_string())?;
-        set_uninstall_string(
-            key,
-            "InstallLocation",
-            &exe.parent().unwrap_or(exe).display().to_string(),
-        )?;
-        Ok(())
-    })();
-    unsafe {
-        let _ = RegCloseKey(key);
-    }
-    result
-}
-
 /// Cleans up the `.old` image a previous upgrade left behind.
 ///
 /// Called on normal startup, by which point the previous image is no longer
@@ -241,6 +245,26 @@ pub fn tidy_previous_upgrade() {
         if stale.exists() {
             let _ = std::fs::remove_file(stale);
         }
+    }
+}
+
+#[cfg(test)]
+mod shortcut_tests {
+    use super::*;
+
+    #[test]
+    fn the_shortcut_goes_in_the_per_user_start_menu() {
+        let p = start_menu_shortcut().expect("APPDATA is set on Windows");
+        let s = p.to_string_lossy().to_lowercase();
+        assert!(s.ends_with("headset tray.lnk"), "{}", p.display());
+        assert!(
+            s.contains(r"\microsoft\windows\start menu\programs"),
+            "{}",
+            p.display()
+        );
+        // Per-user throughout: nothing goes in the all-users Start menu, which
+        // would need administrator rights this project does not ask for.
+        assert!(!s.contains("programdata"), "{}", p.display());
     }
 }
 
@@ -268,9 +292,14 @@ mod tests {
     }
 
     #[test]
-    fn the_uninstall_key_is_per_user() {
-        // HKLM would need elevation and would leave an entry other users see.
-        assert!(UNINSTALL_KEY.starts_with(r"Software\Microsoft\Windows"));
-        assert!(!UNINSTALL_KEY.to_lowercase().contains("wow6432"));
+    fn nothing_here_registers_in_add_remove_programs() {
+        // That entry belongs to the Inno installer. This path used to write it
+        // too, which is how an installation removed by one tool could leave the
+        // other's entry behind, pointing at a deleted executable.
+        let src = include_str!("install.rs");
+        assert!(
+            !src.contains(r"CurrentVersion\Uninstall"),
+            "install.rs writes an Add/Remove Programs key again"
+        );
     }
 }

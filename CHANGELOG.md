@@ -4,9 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.0-alpha.1] - 2026-08-02
+
+First released build. Alpha: it speaks a protocol reconstructed by observation and has been
+run against exactly one headset.
 
 ### Added
+
+- **An installer.** A per-user setup executable with a Start menu entry, published on the
+  releases page. No administrator rights, no driver, no service.
+- **An application icon.** The headset the tray draws, embedded in the executable at five
+  sizes, so Explorer, the Start menu, and the shortcut all show it.
 
 - Noise control: off, ANC, or ambient, with an ANC level of 1–4. Exposed as `headsetctl
   noise` and as a segmented control in the tray panel. Parameter `0x12`, identified by
