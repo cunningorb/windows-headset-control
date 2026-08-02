@@ -72,6 +72,11 @@ windows = { version = "0.58", features = [
     "Win32_System_Registry",
     "Win32_Media_Audio",
     "Win32_Media_Audio_Endpoints",
+    # DPI awareness. A feature of the pinned 0.58, not a crate. The manifest
+    # route is unavailable on x86_64-pc-windows-gnu, which has no
+    # /MANIFEST:EMBED, so the process opts in at runtime through
+    # SetProcessDpiAwarenessContext instead.
+    "Win32_UI_HiDpi",
 ] }
 
 [profile.release]

@@ -42,11 +42,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
     PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow,
     TrackPopupMenu, TranslateMessage, HICON, ICONINFO, IDC_ARROW, MF_SEPARATOR, MF_STRING, MSG,
     TPM_BOTTOMALIGN, TPM_RIGHTALIGN, WINDOW_EX_STYLE, WM_ACTIVATE, WM_APP, WM_CLOSE, WM_COMMAND,
-    WM_DESTROY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPED,
+    WM_DESTROY, WM_DPICHANGED, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONUP, WNDCLASSW,
+    WS_OVERLAPPED,
 };
 
 // Not part of any public API: these are the tray's own window plumbing, and
 // several are `unsafe` in ways only this module's call sites can uphold.
+pub(crate) mod dpi;
 pub(crate) mod panel;
 pub(crate) mod place;
 
@@ -96,6 +98,10 @@ struct Ctx {
     track: Option<crate::ui::layout::TrackGeometry>,
     /// ANC level track from the last render. `None` in every mode but ANC.
     level_track: Option<crate::ui::layout::LevelTrack>,
+    /// Render scale for the display the panel is on. Mouse coordinates arrive
+    /// in physical pixels and `ui::layout` works in logical ones, so this is
+    /// also the divisor for hit-testing.
+    scale: f32,
     /// Value being dragged. Shown instead of the device's value until release,
     /// which is what makes one write per adjustment rather than twenty.
     drag: Option<u8>,
@@ -141,6 +147,9 @@ pub fn run_ui_with<F: FnOnce(isize)>(
     on_window: F,
 ) -> windows::core::Result<()> {
     unsafe {
+        // Before any window exists: the awareness context is fixed at first use.
+        dpi::make_process_per_monitor_aware();
+
         // Apartment-threaded because this thread also pumps messages, which is
         // what COM's STA contract expects.
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
@@ -237,6 +246,7 @@ pub fn run_ui_with<F: FnOnce(isize)>(
                 hits: Vec::new(),
                 track: None,
                 level_track: None,
+                scale: 1.0,
                 drag: None,
                 panel_visible: false,
             })
@@ -364,6 +374,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             PostQuitMessage(0);
             LRESULT(0)
         }
+        // Dragged onto a display with a different scale, or the user changed the
+        // scaling while the panel was open. Re-render at the new density.
+        WM_DPICHANGED if panel::tag(hwnd) == panel::TAG_PANEL => {
+            with_ctx(redraw_panel);
+            LRESULT(0)
+        }
         // The shell restarted and took every tray icon with it. Re-register, and
         // drop the panel: it was anchored to an icon that no longer exists.
         m if m != 0 && m == TASKBAR_CREATED.load(std::sync::atomic::Ordering::Relaxed) => {
@@ -386,7 +402,8 @@ fn redraw_panel(ctx: &mut Ctx) {
     };
     let state = ctx.state.lock().map(|s| s.clone()).unwrap_or_default();
     let panel = ui::build(&state, ctx.view, ctx.param, ctx.drag);
-    let img = match renderer.render(&panel, 1.0) {
+    ctx.scale = unsafe { dpi::window_scale(ctx.panel_hwnd) };
+    let img = match renderer.render(&panel, ctx.scale) {
         Ok(i) => i,
         Err(e) => {
             tracing::error!("panel render failed: {e}");
@@ -448,8 +465,15 @@ fn toggle_panel(ctx: &mut Ctx) {
 }
 
 fn on_panel_press(ctx: &mut Ctx, x: f32, y: f32) {
-    // Panel-local coordinates: the window includes the shadow margin.
-    let (lx, ly) = (x - crate::ui::theme::SHADOW, y - crate::ui::theme::SHADOW);
+    // Physical pixels in, logical units out: the window is sized in physical
+    // pixels but every hit region came from `ui::layout`, which works in the
+    // same logical units as the theme's metrics. The window also includes the
+    // shadow margin, which is in those logical units.
+    let s = if ctx.scale > 0.0 { ctx.scale } else { 1.0 };
+    let (lx, ly) = (
+        x / s - crate::ui::theme::SHADOW,
+        y / s - crate::ui::theme::SHADOW,
+    );
     let Some(target) = ctx
         .hits
         .iter()
@@ -553,7 +577,8 @@ fn on_panel_drag(ctx: &mut Ctx, x: f32) {
         return;
     }
     let Some(g) = ctx.track else { return };
-    let v = g.value_at(x - crate::ui::theme::SHADOW);
+    let s = if ctx.scale > 0.0 { ctx.scale } else { 1.0 };
+    let v = g.value_at(x / s - crate::ui::theme::SHADOW);
     if ctx.drag != Some(v) {
         ctx.drag = Some(v);
         redraw_panel(ctx);
