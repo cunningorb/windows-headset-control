@@ -14,6 +14,10 @@ pub mod state;
 pub mod worker;
 
 #[cfg(windows)]
+pub mod install;
+#[cfg(windows)]
+pub mod settings;
+#[cfg(windows)]
 pub mod win32;
 
 pub use state::HeadsetState;
@@ -26,11 +30,11 @@ pub use worker::Command;
 /// tray warns rather than refusing to run, because trying this out before
 /// uninstalling Synapse is the normal way someone will arrive here.
 #[cfg(windows)]
-pub fn vendor_software_running() -> bool {
-    win32::process_running("RazerAppEngine.exe")
+pub fn warn_vendor_software() -> bool {
+    settings::show_synapse_warning() && win32::process_running("RazerAppEngine.exe")
 }
 
 #[cfg(not(windows))]
-pub fn vendor_software_running() -> bool {
+pub fn warn_vendor_software() -> bool {
     false
 }

@@ -14,18 +14,70 @@ wireless gaming headset over its proprietary HID interface.
 - Reads and writes no firmware.
 - Makes no network requests and collects no telemetry.
 
-**Phase 1 performs zero HID writes anywhere.** `list`, `inspect`, and `probe` — the only
-three commands that exist right now — are entirely read-only: they enumerate, read
-descriptors, and listen for unsolicited reports, and nothing else. `HidTransport` has no
-write method for any command to call. Writing to the device (for example, changing
-sidetone) is out of scope until a later phase is explicitly designed and approved; see
-`docs/device-research.md` for why that has not happened yet.
+**Phase 2 adds a write path, and it is deliberately narrow.** Every command identifier the
+project can send was observed on the wire while the manufacturer's own software drove this
+hardware; the allowlists in `headset-protocol` contain nothing else, so a speculative or
+brute-forced identifier has no path to the device. `docs/device-research.md` records the
+evidence for each one, and eleven observed-but-unidentified parameters remain deliberately
+unnamed.
+
+`list`, `inspect`, and `probe` remain read-only. `probe` now opens the device with
+read-only access rights, so that is enforced by Windows rather than by the absence of a
+call.
+
+## Installing
+
+```
+> headset-tray.exe --install
+```
+
+Copies itself to `%LOCALAPPDATA%\Programs\HeadsetTray`, starts at sign-in, and registers
+an Add/Remove Programs entry so it uninstalls like any other application. Per-user
+throughout: no administrator rights, no service, no scheduled task, nothing written to
+`HKEY_LOCAL_MACHINE`. `--uninstall` reverses it, and so does Windows Settings.
+
+The tray's **Settings** submenu toggles "Run on Windows startup" and "Warn when Synapse is
+running". The startup checkbox reads the same registry value Windows reads at sign-in, so
+disabling the entry from Task Manager's Startup tab is reflected there rather than
+contradicted.
+
+## The tray
+
+`headset-tray.exe` shows battery, microphone mute state, and submenus for sidetone (0–15)
+and game/chat balance (0–20).
+
+State is never cached authoritatively: a value the device refuses shows as unknown rather
+than as a number, and losing the wireless link clears the readings instead of leaving
+stale ones on screen. Mute status is the union of the headset's hardware switch and the
+Windows capture endpoint, because audio is silenced if either is set — clicking it toggles
+only the endpoint, since no software can move a hardware switch.
 
 ## Commands
 
-`headsetctl` is a Windows-only command-line tool. All three commands accept `--json` for
+`headsetctl` is a Windows-only command-line tool. Every command accepts `--json` for
 machine-readable output and `--include-sensitive` to reveal device paths (redacted by
 default).
+
+| Command | Writes to the device |
+| --- | --- |
+| `list`, `inspect`, `probe`, `watch` | no |
+| `get <name>` | sends a read request |
+| `set <name> <value>` | yes |
+| `param get/set <id>` | yes, allowlisted identifiers only |
+
+```
+> headsetctl get battery
+battery: 49
+> headsetctl set sidetone 7
+sidetone: 7
+> headsetctl param get 0x2c        # observed but unidentified; no meaning is claimed
+0x2c: 0f
+```
+
+`get` reports `unavailable` rather than a number when the device refuses a read — which is
+what happens when the headset is powered off. `set` re-reads the parameter afterwards and
+reports what the device actually holds, because a write being acknowledged is not evidence
+that the value changed.
 
 ### `list`
 
