@@ -30,6 +30,10 @@ pub const APP_NAME: &str = "HeadsetTray";
 /// Our own settings key.
 const APP_KEY: &str = r"Software\HeadsetTray";
 const SYNAPSE_WARNING_VALUE: &str = "ShowSynapseWarning";
+const APPEARANCE_VALUE: &str = "Appearance";
+
+/// Where Windows keeps the user's light-or-dark preference for applications.
+const PERSONALIZE_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -190,6 +194,40 @@ pub fn set_run_on_startup(enabled: bool, exe: &Path) -> bool {
 /// Whether to show the "Synapse is running" warning. Defaults to on: a user who
 /// has never touched the setting is better served by knowing something else is
 /// changing their settings underneath them.
+/// The user's appearance choice.
+///
+/// Absent means follow Windows, which is what a fresh install gets. An
+/// unrecognised value is treated the same way rather than being an error: a
+/// hand-edited registry should not stop the tray drawing.
+pub fn appearance() -> crate::ui::theme::Appearance {
+    use crate::ui::theme::Appearance;
+    match read_string(HKEY_CURRENT_USER, APP_KEY, APPEARANCE_VALUE).as_deref() {
+        Some("light") => Appearance::Light,
+        Some("dark") => Appearance::Dark,
+        _ => Appearance::System,
+    }
+}
+
+pub fn set_appearance(a: crate::ui::theme::Appearance) -> bool {
+    use crate::ui::theme::Appearance;
+    set_string(
+        APP_KEY,
+        APPEARANCE_VALUE,
+        match a {
+            Appearance::System => "system",
+            Appearance::Light => "light",
+            Appearance::Dark => "dark",
+        },
+    )
+}
+
+/// Whether Windows is set to light for applications.
+///
+/// Absent is dark, which is what Windows itself does with this value.
+pub fn windows_prefers_light() -> bool {
+    read_dword(HKEY_CURRENT_USER, PERSONALIZE_KEY, "AppsUseLightTheme") == Some(1)
+}
+
 pub fn show_synapse_warning() -> bool {
     read_dword(HKEY_CURRENT_USER, APP_KEY, SYNAPSE_WARNING_VALUE) != Some(0)
 }

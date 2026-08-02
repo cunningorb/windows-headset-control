@@ -87,20 +87,73 @@ pub struct Palette {
     pub state_muted: Color,
 }
 
-/// Set once at startup and whenever Windows reports a settings change. An
-/// atomic rather than a lock: it is read on every primitive during a paint and
-/// written approximately never.
-static HIGH_CONTRAST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// What the user asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Appearance {
+    /// Follow Windows. The default a fresh install gets.
+    System,
+    Light,
+    Dark,
+}
 
+/// What will actually be drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Which {
+    Light,
+    Dark,
+    HighContrast,
+}
+
+/// Decides the palette from the three inputs that can influence it.
+///
+/// Pure, so the precedence is testable without a registry or a window. High
+/// contrast wins over everything: a user who turned it on did not mean "unless
+/// the app has a light theme".
+pub fn resolve(appearance: Appearance, windows_prefers_light: bool, high_contrast: bool) -> Which {
+    if high_contrast {
+        return Which::HighContrast;
+    }
+    match appearance {
+        Appearance::Light => Which::Light,
+        Appearance::Dark => Which::Dark,
+        Appearance::System => {
+            if windows_prefers_light {
+                Which::Light
+            } else {
+                Which::Dark
+            }
+        }
+    }
+}
+
+/// The resolved palette. Set at startup and whenever Windows reports a settings
+/// change. An atomic rather than a lock: read on every primitive during a paint
+/// and written approximately never.
+static RESOLVED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(DARK);
+
+const LIGHT: u8 = 0;
+const DARK: u8 = 1;
+const HIGH_CONTRAST: u8 = 2;
+
+pub fn set_palette(which: Which) {
+    let v = match which {
+        Which::Light => LIGHT,
+        Which::Dark => DARK,
+        Which::HighContrast => HIGH_CONTRAST,
+    };
+    RESOLVED.store(v, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Kept so the existing call sites and tests read naturally.
 pub fn set_high_contrast(on: bool) {
-    HIGH_CONTRAST.store(on, std::sync::atomic::Ordering::Relaxed);
+    set_palette(if on { Which::HighContrast } else { Which::Dark });
 }
 
 pub fn palette() -> Palette {
-    if HIGH_CONTRAST.load(std::sync::atomic::Ordering::Relaxed) {
-        high_contrast_palette()
-    } else {
-        sampled_palette()
+    match RESOLVED.load(std::sync::atomic::Ordering::Relaxed) {
+        LIGHT => light_palette(),
+        HIGH_CONTRAST => high_contrast_palette(),
+        _ => sampled_palette(),
     }
 }
 
@@ -122,6 +175,72 @@ fn sampled_palette() -> Palette {
         text_muted: TEXT_MUTED,
         state_live: STATE_LIVE,
         state_muted: STATE_MUTED,
+    }
+}
+
+// --------------------------------------------------------- light palette ---
+//
+// Sampled from the light mockups by locating each feature and reading it, not
+// by reading fixed coordinates: those images are 363x457 while the dark ones
+// are 358x521, so positions do not carry over. Guessed coordinates were tried
+// first and returned background for four of six values.
+//
+// **Text is sampled as the darkest pixel within the glyph run**, which is the
+// inverse of the rule at the top of this file. That rule takes peak luminance
+// because light ink anti-aliases toward a dark background; here dark ink
+// anti-aliases toward a light one, and averaging reads too light. Following the
+// original rule unchanged would have sampled near-white and produced invisible
+// text that still passes a naive contrast check.
+
+const L_BG_PANEL: Color = Color::rgb(0xF0F0F5);
+const L_BG_CARD: Color = Color::rgb(0xE8E8EE);
+const L_BORDER_CARD: Color = Color::rgb(0xD2D2D8);
+const L_BG_BUTTON: Color = Color::rgb(0xDFDDED);
+const L_TRACK_INACTIVE: Color = Color::rgb(0x9B9CA6);
+const L_TEXT_PRIMARY: Color = Color::rgb(0x23252F);
+const L_TEXT_SECONDARY: Color = Color::rgb(0x6E7283);
+const L_TEXT_MUTED: Color = Color::rgb(0x727687);
+const L_ACCENT: Color = Color::rgb(0x6153B8);
+/// The value text is the same purple as the accent here. In the dark palette it
+/// is a lighter tint; on a light background it is not.
+const L_ACCENT_TEXT: Color = Color::rgb(0x6153B8);
+const L_STATE_LIVE: Color = Color::rgb(0x389669);
+
+// DERIVED, not measured — these three appear in neither mockup.
+//
+// No end label is highlighted in the mockup (sidetone sits at 14 of 15), so the
+// active-label colour could not be read. The dark palette keeps it within a few
+// units of the value text, so this follows.
+const L_ACCENT_LABEL: Color = Color::rgb(0x6153B8);
+// Neither mockup shows the Synapse warning or a muted microphone. The banner is
+// deliberately almost indistinguishable from a card, because in the sampled dark
+// palette it is: #1D1E31 against #1A1D29. The warning is carried by the glyph and
+// the wording, not by colour, so inventing an amber here would be inventing a
+// design decision nobody made.
+const L_BG_BANNER: Color = Color::rgb(0xE6E5EF);
+const L_BORDER_BANNER: Color = Color::rgb(0xCFCEDD);
+const L_STATE_MUTED: Color = Color::rgb(0xC62B36);
+
+/// The light palette. See above for which values were sampled and which were
+/// derived; the distinction matters because this file opens by claiming
+/// everything in it was measured.
+pub fn light_palette() -> Palette {
+    Palette {
+        bg_panel: L_BG_PANEL,
+        bg_card: L_BG_CARD,
+        bg_banner: L_BG_BANNER,
+        bg_button: L_BG_BUTTON,
+        border_card: L_BORDER_CARD,
+        border_banner: L_BORDER_BANNER,
+        track_inactive: L_TRACK_INACTIVE,
+        accent: L_ACCENT,
+        accent_text: L_ACCENT_TEXT,
+        accent_label: L_ACCENT_LABEL,
+        text_primary: L_TEXT_PRIMARY,
+        text_secondary: L_TEXT_SECONDARY,
+        text_muted: L_TEXT_MUTED,
+        state_live: L_STATE_LIVE,
+        state_muted: L_STATE_MUTED,
     }
 }
 
@@ -310,6 +429,84 @@ mod tests {
             assert!(gap > 128.0, "{what}: luminance gap only {gap:.0}");
         }
         set_high_contrast(false);
+    }
+
+    #[test]
+    fn high_contrast_beats_every_appearance_choice() {
+        for a in [Appearance::System, Appearance::Light, Appearance::Dark] {
+            for win_light in [true, false] {
+                assert_eq!(
+                    resolve(a, win_light, true),
+                    Which::HighContrast,
+                    "{a:?} with windows_light={win_light} should still yield high contrast"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_override_beats_the_windows_preference() {
+        for win_light in [true, false] {
+            assert_eq!(resolve(Appearance::Light, win_light, false), Which::Light);
+            assert_eq!(resolve(Appearance::Dark, win_light, false), Which::Dark);
+        }
+    }
+
+    #[test]
+    fn system_follows_windows() {
+        assert_eq!(resolve(Appearance::System, true, false), Which::Light);
+        assert_eq!(resolve(Appearance::System, false, false), Which::Dark);
+    }
+
+    #[test]
+    fn the_resolved_palette_is_the_one_that_gets_drawn() {
+        set_palette(Which::Light);
+        assert_eq!(palette().bg_panel, L_BG_PANEL);
+        set_palette(Which::HighContrast);
+        assert_eq!(palette().bg_panel, high_contrast_palette().bg_panel);
+        set_palette(Which::Dark);
+        assert_eq!(palette().bg_panel, BG_PANEL);
+    }
+
+    #[test]
+    fn the_light_palette_is_light_and_keeps_its_contrast() {
+        let p = light_palette();
+        let luminance =
+            |c: Color| 0.2126 * (c.0 as f32) + 0.7152 * (c.1 as f32) + 0.0722 * (c.2 as f32);
+
+        // Light surfaces, dark ink: the inverse of the sampled palette.
+        assert!(luminance(p.bg_panel) > 200.0, "the panel should be light");
+        assert!(luminance(p.bg_card) > 190.0, "cards should be light");
+        assert!(
+            luminance(p.text_primary) < 80.0,
+            "primary text should be dark"
+        );
+
+        // A light theme fails differently from a dark one: pale text on a pale
+        // card is the easy mistake, and it is nearly invisible to whoever wrote
+        // it. The threshold is 40 rather than the high-contrast palette's 128
+        // because this is an ordinary theme, and text_secondary is meant to be
+        // soft.
+        let pairs: [(Color, Color, &str); 5] = [
+            (p.text_primary, p.bg_panel, "title on panel"),
+            (p.text_secondary, p.bg_panel, "caption on panel"),
+            (p.text_primary, p.bg_card, "battery on card"),
+            (p.accent_text, p.bg_panel, "value on panel"),
+            (p.accent, p.track_inactive, "filled track on unfilled"),
+        ];
+        for (fg, bg, what) in pairs {
+            let gap = (luminance(fg) - luminance(bg)).abs();
+            assert!(gap > 40.0, "{what}: luminance gap only {gap:.0}");
+        }
+    }
+
+    #[test]
+    fn the_sampled_dark_palette_is_untouched() {
+        // Adding a theme must not edit the one that was measured.
+        set_high_contrast(false);
+        assert_eq!(BG_PANEL, Color::rgb(0x131623));
+        assert_eq!(ACCENT, Color::rgb(0x9184D9));
+        assert_eq!(palette().bg_panel, BG_PANEL);
     }
 
     #[test]
