@@ -236,6 +236,18 @@ fn run_tray() {
     use headset_tray::{install, state::HeadsetState, win32, worker};
 
     tracing_subscriber_init();
+
+    // Bound to a named local: this must outlive the message loop. `let _ = ...`
+    // would drop it here and defeat the whole guard. Claimed before anything
+    // else starts, so a second instance never opens a ControlSession.
+    let _instance = match win32::claim_single_instance() {
+        win32::SingleInstance::Claimed(guard) => guard,
+        win32::SingleInstance::AlreadyRunning => {
+            win32::signal_existing_instance();
+            return;
+        }
+    };
+
     // A previous --install may have parked the old image alongside the new one;
     // by now it is no longer running, so it can go.
     install::tidy_previous_upgrade();

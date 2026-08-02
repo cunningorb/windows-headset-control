@@ -62,6 +62,9 @@ const WM_TRAY: u32 = WM_APP + 1;
 /// Posted by the worker thread when state changed.
 pub const WM_STATE: u32 = WM_APP + 2;
 
+/// Posted by a second instance to ask the first to show itself.
+pub const WM_SHOW_PANEL: u32 = WM_APP + 3;
+
 /// The shell's "I have restarted, re-add your icon" broadcast.
 ///
 /// Registered at runtime rather than being a constant: `RegisterWindowMessageW`
@@ -134,6 +137,74 @@ fn with_ctx<R>(f: impl FnOnce(&mut Ctx) -> R) -> Option<R> {
             None
         }
     })
+}
+
+/// Holds the single-instance mutex for the life of the process.
+///
+/// Dropping this releases the claim, so it must be bound to a named local for
+/// the whole run — `let _ = claim_single_instance()` would drop it immediately
+/// and let a second instance straight in.
+pub struct OwnedMutex(windows::Win32::Foundation::HANDLE);
+
+impl Drop for OwnedMutex {
+    fn drop(&mut self) {
+        // May be null: the "could not create a mutex" branch below still hands
+        // back an OwnedMutex so the caller has one code path, and closing a
+        // null handle is an error rather than a no-op.
+        if !self.0.is_invalid() {
+            unsafe {
+                let _ = CloseHandle(self.0);
+            }
+        }
+    }
+}
+
+pub enum SingleInstance {
+    Claimed(OwnedMutex),
+    AlreadyRunning,
+}
+
+/// Claims the right to be the one running tray for this user session.
+///
+/// `Local\` rather than `Global\`: the tray is per-user and per-session by
+/// design — it installs to `%LOCALAPPDATA%` and writes only to
+/// `HKEY_CURRENT_USER` — and `Global\` would additionally block a second user
+/// on the same machine from running their own.
+pub fn claim_single_instance() -> SingleInstance {
+    use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+    use windows::Win32::System::Threading::CreateMutexW;
+
+    unsafe {
+        match CreateMutexW(None, TRUE, w!("Local\\HeadsetTray.SingleInstance")) {
+            // The handle is returned even when the mutex already existed, so
+            // the error code is what distinguishes the two, not the result.
+            Ok(h) => {
+                if GetLastError() == ERROR_ALREADY_EXISTS {
+                    let _ = CloseHandle(h);
+                    SingleInstance::AlreadyRunning
+                } else {
+                    SingleInstance::Claimed(OwnedMutex(h))
+                }
+            }
+            // Without a mutex there is no way to tell. Starting is the less
+            // annoying failure: a duplicate icon beats refusing to run.
+            Err(e) => {
+                tracing::warn!("single-instance mutex unavailable: {e}");
+                SingleInstance::Claimed(OwnedMutex(windows::Win32::Foundation::HANDLE::default()))
+            }
+        }
+    }
+}
+
+/// Asks an already-running tray to show its panel, so a second launch does
+/// something useful instead of nothing.
+pub fn signal_existing_instance() {
+    use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
+    unsafe {
+        if let Ok(h) = FindWindowW(w!("HeadsetTrayWindow"), PCWSTR::null()) {
+            let _ = PostMessageW(h, WM_SHOW_PANEL, WPARAM(0), LPARAM(0));
+        }
+    }
 }
 
 /// Runs the tray UI on the calling thread until the user exits.
@@ -372,6 +443,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 }
             });
             PostQuitMessage(0);
+            LRESULT(0)
+        }
+        // A second instance asked us to show ourselves rather than starting a
+        // duplicate tray.
+        WM_SHOW_PANEL => {
+            with_ctx(|ctx| {
+                if !ctx.panel_visible {
+                    toggle_panel(ctx);
+                }
+            });
             LRESULT(0)
         }
         // Dragged onto a display with a different scale, or the user changed the
