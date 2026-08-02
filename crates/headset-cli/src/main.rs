@@ -22,7 +22,7 @@ fn main() -> Result<()> {
     let out = match &args.command {
         cli::Command::List(a) => cmd::list::run(&backend, a, &r, args.json)?,
         cli::Command::Inspect(a) => cmd::inspect::run(&backend, a, &r, args.json)?,
-        cli::Command::Probe(_) => "probe: not implemented until Task 10".to_string(),
+        cli::Command::Probe(a) => cmd::probe::run(&backend, a, &r, args.json)?,
     };
     print!("{out}");
     Ok(())
