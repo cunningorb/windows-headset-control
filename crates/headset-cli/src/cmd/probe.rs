@@ -24,8 +24,9 @@ pub enum ProbeOp {
     PassiveListen,
 }
 
-/// Minimum spacing between repeated device requests, enforced even though the
-/// current allowlist contains no request-emitting operation.
+/// Minimum spacing intended between repeated device requests. Reserved for
+/// the write phase; nothing enforces it yet, because `ProbeOp` currently has
+/// no request-emitting variant for it to apply to.
 pub const MIN_REQUEST_INTERVAL: Duration = Duration::from_millis(250);
 
 pub fn run(
@@ -224,6 +225,7 @@ fn render_json(
 
     serde_json::to_string_pretty(&json!({
         "schema_version": SCHEMA_VERSION,
+        "include_sensitive": r.include_sensitive(),
         "operation": format!("{op:?}"),
         "wrote_to_device": false,
         "candidate_index": index,

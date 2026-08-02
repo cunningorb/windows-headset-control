@@ -21,6 +21,24 @@ fn no_candidate(listen_ms: u64) -> ProbeArgs {
 }
 
 #[test]
+fn probe_json_envelope_reports_include_sensitive_like_list_and_inspect_do() {
+    // `list --json` and `inspect --json` both emit `include_sensitive` so a
+    // consumer can tell, in-band, whether the document is redacted. `probe`
+    // previously omitted it: with `--json --include-sensitive` it would emit
+    // a raw path with no marker in the document itself that it was unredacted.
+    let backend = FakeHidBackend::from_fixture_str(FIXTURE).unwrap();
+    let args = no_candidate(100);
+
+    let out = probe::run(&backend, &args, &Redactor::new(false), true).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["include_sensitive"], false);
+
+    let out = probe::run(&backend, &args, &Redactor::new(true), true).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["include_sensitive"], true);
+}
+
+#[test]
 fn probe_reports_silence_when_the_device_sends_nothing() {
     let backend = FakeHidBackend::from_fixture_str(FIXTURE).unwrap();
     let args = no_candidate(100);

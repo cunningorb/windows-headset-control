@@ -111,5 +111,10 @@ mod tests {
         assert!(parse_u16_id("zzzz").is_err());
         assert!(parse_u16_id("").is_err());
         assert!(parse_u16_id("-1").is_err());
+        // A bare prefix with no digits after it: the `strip_prefix`-then-check
+        // ordering is the one place this could silently regress, e.g. if the
+        // emptiness check moved before the prefix strip and matched on `s`
+        // instead of `body`.
+        assert!(parse_u16_id("0x").is_err());
     }
 }
