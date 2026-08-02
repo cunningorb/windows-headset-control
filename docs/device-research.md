@@ -104,30 +104,91 @@ This transport conclusion — feature reports unavailable, interrupt in/out only
 byte + 63 payload bytes — was determined entirely from our own descriptor reads. No
 part of it was taken from, or needed to be checked against, prior art.
 
+### Correction (2026-08-02): the write path is SET_REPORT, not interrupt output
+
+The paragraph above concluded that interrupt output was the *only* viable transport.
+The descriptor facts behind it are unchanged and still correct — feature report length
+really is `0` on every collection — but the conclusion drawn from them was too narrow.
+Observation of the vendor software (route 1, below) shows it writes with a **control-pipe
+`SET_REPORT`**, not an interrupt output transfer:
+
+```
+bmRequestType 0x21   (host-to-device, class, interface)
+bRequest      9      (SET_REPORT)
+wValue        0x0202 (report type 0x02 = Output, report ID 0x02)
+wIndex        5      (interface 5)
+wLength       64
+```
+
+This is the transfer `HidD_SetOutputReport` produces. Responses and unsolicited events
+arrive as interrupt input reports on endpoint `0x84`, as originally described. "Feature
+reports are unavailable" and "output reports must therefore go out over the interrupt
+endpoint" are separate claims; the first is measured, the second was an inference, and
+the inference was wrong. The write path implemented in Phase 2 uses
+`HidD_SetOutputReport` because that is what was observed working against this hardware.
+
 ## Hypothesis register
 
-Every row below that concerns protocol *semantics* (what a byte or request means) is
-`unverified` at this stage of the project. Only the descriptor facts captured in the
-Verified Hardware Baseline and the Control collection selection / Transport sections
-above carry real confidence, because those were read directly from Windows HID
-descriptor APIs against our own hardware. This register is deliberately mostly empty:
-we do not have a known-safe request to exercise yet (see Blocker, below), so there is
-nothing honest to fill in for request/response semantics.
+Updated 2026-08-02, after route 1 was taken (see Blocker, below). Rows that were
+`unverified` because no request/response pair had ever been observed are now backed by
+captured traffic. Rows still lacking evidence remain `unverified` and are not filled in.
 
-| Hypothesis | Request byte layout | Expected response length | Checksum hypothesis | Confidence | Evidence |
+| Hypothesis | Request byte layout | Expected response length | Checksum | Confidence | Evidence |
 | --- | --- | --- | --- | --- | --- |
-| `COL04` (usage page `0xFF14`, report ID `0x02`) is the control channel | n/a | n/a | n/a | **confirmed** (descriptor-level; not protocol-level) | `HidP_GetCaps`/`HidP_GetValueCaps` on our hardware: 64-byte in/out, report ID `0x02` both directions, highest ranking score (174) |
-| Feature reports are unavailable on this device | n/a | n/a | n/a | **confirmed** | `feature_report_len == 0` on all four collections, read via `HidP_GetCaps` |
-| A byte-0 report-ID framing byte precedes 63 payload bytes | byte 0 = `0x02`, bytes 1-63 = unknown | n/a | n/a | **confirmed** (framing only, not content) | Declared report length is 64 bytes total including the report-ID byte; declared report ID is `0x02` |
-| Any specific request byte layout that elicits a response | unknown | unknown | unknown | **unverified** | none — no known-safe request exists for this hardware (see Blocker) |
-| Any specific response byte layout or field meaning | unknown | unknown | unknown | **unverified** | none |
-| Any checksum or validation scheme over request/response payloads | unknown | unknown | unknown | **unverified** | none |
-| `COL02` (`0xFF13`) carries a usable secondary or legacy control channel | unknown | unknown | unknown | **unverified** | descriptor shape only (62-byte, asymmetric report IDs `0x07`/`0x06`); no request/response exchanged |
+| `COL04` (usage page `0xFF14`, report ID `0x02`) is the control channel | n/a | n/a | n/a | **confirmed** (descriptor and protocol level) | `HidP_GetCaps` on our hardware; and every observed exchange targets report ID `0x02`, 64 bytes, interface 5 |
+| Feature reports are unavailable on this device | n/a | n/a | n/a | **confirmed** | `feature_report_len == 0` on all four collections |
+| A byte-0 report-ID framing byte precedes 63 payload bytes | byte 0 = `0x02` | n/a | n/a | **confirmed** | Declared report length 64 including the ID byte |
+| Writes are delivered by `SET_REPORT` on the control pipe | `bmRequestType 0x21`, `bRequest 9`, `wValue 0x0202`, `wIndex 5` | 64 bytes on interrupt IN `0x84` | n/a | **confirmed** | Observed for every host-originated frame; see the Transport correction above |
+| Checksum is `XOR` of bytes 0..61, stored at byte 62 | n/a | n/a | byte 62 = XOR(bytes 0..61); byte 63 reserved | **confirmed** | Verified against all 200+ captured reports, both directions, no exceptions |
+| `data_size` at byte 6 equals `4 + payload length` | n/a | 4 + payload | n/a | **confirmed** | Holds across payload lengths 0, 1, 2, 6, 10, and 11 |
+| Bytes 9-10 carry the command; bit 7 of byte 10 selects write vs read | bytes 9-10 = command, byte 11 = role, byte 12 = length | varies | as above | **confirmed** | Read/write pairs observed for three parameters: `0x19`/`0x99`, `0x5C`/`0xDC`, `0x6A`/`0xEA` |
+| Byte 11 is a role selector (`00` request, `01` response, `02` event) | byte 11 = role | n/a | n/a | **confirmed** | All three values observed with consistent semantics across every capture |
+| A write's response payload is a result code | n/a | 1 byte | n/a | **confirmed** for `0x00`; **partial** for `0xFF` | `0x00` on every successful write; `0xFF` returned by `0x98`/`0x99` writes while the mic was hardware-muted, `0x00` for the identical writes once unmuted |
+| Frames with non-zero class/command-id bytes belong to a different family | bytes 7-8 non-zero | varies | as above | **unverified** | Two exchanges observed (`command_id` `0x84` and `0x04`); not decoded, treated as opaque |
+| `COL02` (`0xFF13`) carries a usable secondary or legacy control channel | unknown | unknown | unknown | **unverified** | descriptor shape only; no request/response exchanged |
 
-No plausible-looking request/response rows have been invented to make this table look
-more complete than the evidence supports. When a real request/response pair is
-observed (see Blocker, route 1), it should be added here as a new row with its own
-evidence citation, not merged into the placeholders above.
+### Parameter table
+
+Parameter id is the low 7 bits of byte 10. A name appears only where behaviour was
+observed to change with it; see the Unknown bytes policy.
+
+| Id | Read | Write | Name | Range | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| `0x20` | `0x0020` | — | link state | 2 bytes | `00 00` while the headset was off; `01 00` pushed at the instant it was powered on, followed by the host reading every other parameter |
+| `0x21` | `0x8021` | — | battery level | 0–100 | Read returned `0x34` while the vendor UI showed 52; an event later reported `0x31` after the user observed the level falling |
+| `0x19` | `0x8019` | `0x8099` | sidetone level | 0–15 | Slider moved end to end; values clamped at `0x00` and `0x0F` while still turning |
+| `0x5C` | `0x805C` | `0x80DC` | game/chat balance | 0–20 | Same clamping evidence at `0x00` and `0x14`; centre `0x0A` |
+| `0x55` | `0x8055` | — | mic mute (hardware switch) | 0/1 | Events on the headset's physical mute; no write ever observed, and the vendor UI exposes no mute control |
+| `0x6A` | `0x806A` | `0x80EA` | onboard slider function | ≥3 states | Toggling which parameter the wheel drives changed this value; the wheel then reported through a different parameter |
+
+Writes observed but not otherwise identified: `0x9E` (written `01` during startup).
+`0x98` is written `01` immediately before every `0x99` sidetone write, in both
+directions of a mute transition, and is not written before any other parameter — it is
+recorded as sidetone-adjacent, not as a general preamble.
+
+Reads observed whose meaning is **unknown**, and which are deliberately unnamed:
+`0x12` (2 bytes), `0x15` (indexed 0–8, 11 bytes), `0x16`, `0x17` (10 bytes), `0x2A`,
+`0x2C`, `0x5D`, `0x5F`, `0x60` (indexed 0–8, 6 bytes), `0x65` (indexed, 2 bytes),
+`0x66`. The indexed shape of `0x15`/`0x60` is consistent with a nine-entry table, but
+no interpretation of their payload bytes is recorded, and none may be assumed.
+
+### What is out of scope of this protocol
+
+Two features that a caller might expect to find here are **not** in the vendor
+protocol at all, established by observing that changing them produced no vendor
+traffic whatsoever:
+
+- **Volume** is USB Audio Class `SET_CUR` on control selector `0x02`, sent to two
+  feature units (entity `0x02` on interface 0 and entity `0x0A` on interface 3),
+  carrying signed 16-bit values in 1/256 dB.
+- **Mic mute, as set by software**, is USB Audio Class `SET_CUR` on control selector
+  `0x01`, entity `0x02`, interface 0. It is independent of the hardware mute switch
+  reported by parameter `0x55`: toggling the Windows mute produced no `0x55` event, and
+  the headset's own switch produced no audio-class transfer. Both were captured in the
+  same session.
+
+Anything reading or writing volume or software mute must use the Windows audio APIs.
+There is no vendor command to look for.
 
 ## Unknown bytes policy
 
@@ -147,7 +208,31 @@ Concretely:
   ranges as opaque and must not assign field names, offsets, or interpretations to
   them speculatively.
 
-## Blocker: no known-safe request exists yet
+## Blocker: RESOLVED 2026-08-02 via route 1
+
+**Route 1 was taken.** The vendor software's HID traffic was captured with USBPcap and
+Wireshark against our own hardware across fifteen sessions, each isolating one action
+(one setting changed, one physical control moved, one power cycle). The observed
+request/response pairs are recorded above as behavioural facts: what was sent, what came
+back, under what conditions.
+
+This is the interoperability method the Blocker section itself named as standard and
+clean-room-preserving. It records observed device behaviour. No third-party source,
+comment, command table, or documentation was consulted, and the PID `0x0577` prior art
+remains unused — its command set was never referenced, and every identifier implemented
+in Phase 2 was seen on our own wire.
+
+**Consequence:** sidetone control and game/chat balance control are unblocked. Every
+command in the Phase 2 allowlist is an identifier observed in these captures. Route 3
+(assume the other product's command set applies) was **not** taken and remains
+prohibited.
+
+The original statement of the Blocker is preserved below, unedited, because the
+reasoning that led to it is part of the research record.
+
+---
+
+### Original Blocker text (Phase 1, superseded)
 
 Phase 1B was specified as "exchange one known-safe request and response." **On this
 hardware, no such request is known.**
@@ -222,6 +307,21 @@ matching report ID both directions) stands on its own regardless of this observa
 
 This finding does **not** license trying a speculative write. The Blocker section's
 three routes to a known-safe request are unchanged, and none of them has been taken.
+
+### Explanation of the silence (2026-08-02)
+
+The probe's silence now has a direct explanation, and the tentative reading above — "the
+device may simply not push status reports unsolicited" — is **wrong**. The device does
+push unsolicited input reports: battery changes, mic mute transitions, onboard wheel
+movement, and headset connect/disconnect all arrive on `COL04` with no request.
+
+It pushes them **only when something changes**. Task 10's probe ran with audio playing
+but with no setting altered and no control touched, so there was nothing to report. The
+listen window was not too short; the device had nothing to say.
+
+This is worth re-running as a positive control: probing `COL04` while turning the
+onboard wheel produces a report per detent. A probe that changes nothing will still,
+correctly, observe nothing.
 
 ## Prior-art hypotheses: confirmed and refuted
 
