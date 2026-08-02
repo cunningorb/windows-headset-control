@@ -16,11 +16,13 @@ fn main() {
         "--install" => run_install(),
         "--uninstall" => run_uninstall(),
         "--render-panel" => run_render_panel(),
+        "--export-icon" => run_export_icon(),
         "--help" | "-h" | "/?" => report(
             "Headset Tray",
             "Usage:\n  headset-tray.exe              run the tray\n  \
              headset-tray.exe --install    install and run at logon\n  \
-             headset-tray.exe --uninstall  remove startup and the uninstall entry",
+             headset-tray.exe --uninstall  remove startup and the uninstall entry\n  \
+             headset-tray.exe --export-icon <path.ico>   regenerate the application icon",
         ),
         _ => run_tray(),
     }
@@ -87,6 +89,25 @@ fn run_uninstall() {
             "Headset Tray uninstall failed",
             &format!("Could not uninstall: {e}"),
         ),
+    }
+}
+
+/// Writes the multi-size icon to a path. Run when the drawing changes; the
+/// result is committed and embedded as a resource.
+#[cfg(windows)]
+fn run_export_icon() {
+    use headset_tray::ui::icon::{encode_ico, ICON_SIZES};
+
+    let Some(path) = std::env::args().nth(2) else {
+        report(
+            "Export icon",
+            "Usage: headset-tray.exe --export-icon <path.ico>",
+        );
+        return;
+    };
+    match std::fs::write(&path, encode_ico(&ICON_SIZES)) {
+        Ok(()) => report("Export icon", &format!("Wrote {path}")),
+        Err(e) => report("Export icon", &format!("Could not write {path}: {e}")),
     }
 }
 

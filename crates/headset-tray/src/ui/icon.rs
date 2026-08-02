@@ -86,12 +86,142 @@ pub fn icon_pixels(n: usize) -> Vec<u32> {
     px
 }
 
+/// Sizes Windows asks for: taskbar and tray, Start menu, and Explorer's larger
+/// views. 256 costs about 256 KB uncompressed and is what keeps the largest
+/// views sharp.
+pub const ICON_SIZES: [usize; 5] = [16, 32, 48, 128, 256];
+
+/// Encodes the icon as a Windows `.ico`.
+///
+/// The format is a 6-byte header, one 16-byte directory entry per image, then
+/// the images. Each image is a DIB whose declared height is **twice** the real
+/// height: the format expects a colour bitmap followed by an AND mask. The mask
+/// is left all-zero because the 32-bit colour data carries its own alpha.
+///
+/// Written by hand rather than with an image crate: this is the whole format,
+/// and the project takes no dependency it can avoid.
+pub fn encode_ico(sizes: &[usize]) -> Vec<u8> {
+    const HEADER: usize = 6;
+    const ENTRY: usize = 16;
+    const DIB_HEADER: usize = 40;
+
+    let mask_stride = |n: usize| n.div_ceil(32) * 4;
+    let image_len = |n: usize| DIB_HEADER + n * n * 4 + n * mask_stride(n);
+
+    let mut out = Vec::new();
+    out.extend_from_slice(&0u16.to_le_bytes()); // reserved
+    out.extend_from_slice(&1u16.to_le_bytes()); // type: icon
+    out.extend_from_slice(&(sizes.len() as u16).to_le_bytes());
+
+    let mut offset = HEADER + ENTRY * sizes.len();
+    for &n in sizes {
+        // 256 does not fit in a byte and is encoded as zero.
+        let dim = if n >= 256 { 0u8 } else { n as u8 };
+        out.push(dim); // width
+        out.push(dim); // height
+        out.push(0); // palette size: none
+        out.push(0); // reserved
+        out.extend_from_slice(&1u16.to_le_bytes()); // planes
+        out.extend_from_slice(&32u16.to_le_bytes()); // bits per pixel
+        out.extend_from_slice(&(image_len(n) as u32).to_le_bytes());
+        out.extend_from_slice(&(offset as u32).to_le_bytes());
+        offset += image_len(n);
+    }
+
+    for &n in sizes {
+        let px = icon_pixels(n);
+
+        out.extend_from_slice(&(DIB_HEADER as u32).to_le_bytes()); // biSize
+        out.extend_from_slice(&(n as i32).to_le_bytes()); // biWidth
+        out.extend_from_slice(&((n * 2) as i32).to_le_bytes()); // biHeight
+        out.extend_from_slice(&1u16.to_le_bytes()); // biPlanes
+        out.extend_from_slice(&32u16.to_le_bytes()); // biBitCount
+        out.extend_from_slice(&0u32.to_le_bytes()); // biCompression: BI_RGB
+        out.extend_from_slice(&0u32.to_le_bytes()); // biSizeImage
+        out.extend_from_slice(&0i32.to_le_bytes()); // biXPelsPerMeter
+        out.extend_from_slice(&0i32.to_le_bytes()); // biYPelsPerMeter
+        out.extend_from_slice(&0u32.to_le_bytes()); // biClrUsed
+        out.extend_from_slice(&0u32.to_le_bytes()); // biClrImportant
+
+        // Bottom-up, which is what a positive biHeight means.
+        for y in (0..n).rev() {
+            for x in 0..n {
+                out.extend_from_slice(&px[y * n + x].to_le_bytes());
+            }
+        }
+        out.resize(out.len() + n * mask_stride(n), 0);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn at(px: &[u32], n: usize, x: usize, y: usize) -> u32 {
         px[y * n + x]
+    }
+
+    fn u16_at(b: &[u8], o: usize) -> u16 {
+        u16::from_le_bytes([b[o], b[o + 1]])
+    }
+    fn u32_at(b: &[u8], o: usize) -> u32 {
+        u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
+    }
+
+    #[test]
+    fn the_ico_header_declares_an_icon_with_one_entry_per_size() {
+        let ico = encode_ico(&ICON_SIZES);
+        assert_eq!(u16_at(&ico, 0), 0, "reserved");
+        assert_eq!(u16_at(&ico, 2), 1, "type 1 = icon");
+        assert_eq!(u16_at(&ico, 4) as usize, ICON_SIZES.len());
+    }
+
+    #[test]
+    fn every_directory_entry_points_inside_the_file() {
+        // A wrong offset or length yields an icon Windows silently refuses to
+        // load, which looks exactly like "the icon didn't work" with no error.
+        let ico = encode_ico(&ICON_SIZES);
+        for (i, size) in ICON_SIZES.iter().enumerate() {
+            let e = 6 + i * 16;
+            let declared = ico[e] as usize;
+            assert_eq!(
+                declared,
+                if *size == 256 { 0 } else { *size },
+                "256 is encoded as 0; {size} was encoded as {declared}"
+            );
+            assert_eq!(u16_at(&ico, e + 4), 1, "planes");
+            assert_eq!(u16_at(&ico, e + 6), 32, "bit count");
+            let len = u32_at(&ico, e + 8) as usize;
+            let off = u32_at(&ico, e + 12) as usize;
+            assert!(
+                off + len <= ico.len(),
+                "entry {i} runs past the end of the file"
+            );
+            assert_eq!(
+                u32_at(&ico, off),
+                40,
+                "each image starts with a 40-byte header"
+            );
+            assert_eq!(u32_at(&ico, off + 4) as usize, *size, "biWidth");
+            assert_eq!(
+                u32_at(&ico, off + 8) as usize,
+                size * 2,
+                "biHeight is doubled: colour bitmap plus AND mask"
+            );
+        }
+    }
+
+    #[test]
+    fn the_committed_icon_matches_what_the_code_generates() {
+        // The one that actually catches a forgotten regeneration.
+        let committed = include_bytes!("../../assets/headset.ico");
+        assert_eq!(
+            committed.as_slice(),
+            encode_ico(&ICON_SIZES).as_slice(),
+            "assets/headset.ico is stale; regenerate it with \
+             `cargo run -p headset-tray -- --export-icon crates/headset-tray/assets/headset.ico`"
+        );
     }
 
     #[test]
