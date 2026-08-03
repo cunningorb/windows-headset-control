@@ -236,7 +236,7 @@ pub fn run_ui_with<F: FnOnce(isize)>(
     unsafe {
         // Before any window exists: the awareness context is fixed at first use.
         dpi::make_process_per_monitor_aware();
-        crate::ui::theme::set_high_contrast(high_contrast_enabled());
+        apply_appearance();
 
         // Apartment-threaded because this thread also pumps messages, which is
         // what COM's STA contract expects.
@@ -363,6 +363,19 @@ fn write_tip(nid: &mut NOTIFYICONDATAW, text: &str) {
     let wide: Vec<u16> = text.encode_utf16().take(nid.szTip.len() - 1).collect();
     nid.szTip = [0; 128];
     nid.szTip[..wide.len()].copy_from_slice(&wide);
+}
+
+/// Resolves the palette from the user's choice, Windows' preference, and high
+/// contrast, and stores it for the next paint.
+///
+/// Called at startup and on every `WM_SETTINGCHANGE`, so a user on `AUTO` who
+/// switches Windows to light sees the panel follow without reopening it.
+fn apply_appearance() {
+    crate::ui::theme::set_palette(crate::ui::theme::resolve(
+        crate::settings::appearance(),
+        crate::settings::windows_prefers_light(),
+        high_contrast_enabled(),
+    ));
 }
 
 /// Whether Windows is in high-contrast mode.
@@ -558,7 +571,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         // The user turned high contrast on or off while we were running.
         WM_SETTINGCHANGE => {
-            crate::ui::theme::set_high_contrast(high_contrast_enabled());
+            apply_appearance();
             with_ctx(|ctx| {
                 if ctx.panel_visible {
                     redraw_panel(ctx);
@@ -737,6 +750,9 @@ fn on_panel_press(ctx: &mut Ctx, x: f32, y: f32) {
                 });
             }
         }
+        HitTarget::AppearanceSystem => set_appearance(ctx, crate::ui::theme::Appearance::System),
+        HitTarget::AppearanceDark => set_appearance(ctx, crate::ui::theme::Appearance::Dark),
+        HitTarget::AppearanceLight => set_appearance(ctx, crate::ui::theme::Appearance::Light),
         HitTarget::ToggleStartup => {
             let target_exe = crate::install::installed_exe()
                 .filter(|p| p.exists())
@@ -756,6 +772,17 @@ fn on_panel_press(ctx: &mut Ctx, x: f32, y: f32) {
                 redraw_panel(ctx);
             }
         }
+    }
+}
+
+/// Stores the appearance choice, re-resolves the palette, and repaints.
+///
+/// Re-resolves rather than assuming the choice maps straight to a palette:
+/// `System` depends on Windows, and high contrast overrides all three.
+fn set_appearance(ctx: &mut Ctx, a: crate::ui::theme::Appearance) {
+    if crate::settings::set_appearance(a) {
+        apply_appearance();
+        redraw_panel(ctx);
     }
 }
 

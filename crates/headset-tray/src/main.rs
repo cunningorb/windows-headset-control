@@ -216,6 +216,20 @@ fn run_render_panel() {
         SliderParam::GameChat,
     ));
 
+    // The light palette, on both views.
+    cases.push((
+        "light-main",
+        base.clone(),
+        View::Main,
+        SliderParam::GameChat,
+    ));
+    cases.push((
+        "light-settings",
+        base.clone(),
+        View::Settings,
+        SliderParam::GameChat,
+    ));
+
     let mut off = base.clone();
     off.connected = Some(false);
     off.battery = None;
@@ -246,7 +260,15 @@ fn run_render_panel() {
         }
         // One fixture exercises the accessibility palette; the rest are the
         // sampled one, so the flag is set per case rather than once.
-        headset_tray::ui::theme::set_high_contrast(name == "high-contrast");
+        // One fixture per palette, so each is diffable. Everything else renders
+        // in the sampled dark palette, and those files must stay byte-identical.
+        headset_tray::ui::theme::set_palette(if name == "high-contrast" {
+            headset_tray::ui::theme::Which::HighContrast
+        } else if name.starts_with("light-") {
+            headset_tray::ui::theme::Which::Light
+        } else {
+            headset_tray::ui::theme::Which::Dark
+        });
         let panel = ui::build(&state, view, param, None);
         match renderer.render(&panel, 1.0) {
             Ok(img) => {

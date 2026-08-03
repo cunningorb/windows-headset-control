@@ -116,6 +116,10 @@ pub enum HitTarget {
     NoiseAmbient,
     /// The ANC level track. Only present while the mode is ANC.
     NoiseLevel,
+    /// The three segments of the Appearance row, in the Settings view.
+    AppearanceSystem,
+    AppearanceDark,
+    AppearanceLight,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -752,6 +756,65 @@ fn main_body(
     }
 }
 
+/// What the Appearance row says beneath its title.
+///
+/// `System` names the theme it actually resolved to, so `AUTO` is not a black
+/// box on a machine whose Windows is dark.
+pub fn appearance_subtitle(a: Appearance) -> String {
+    match a {
+        Appearance::Light => "Light theme".to_string(),
+        Appearance::Dark => "Dark theme".to_string(),
+        Appearance::System => {
+            let resolved = if crate::settings::windows_prefers_light() {
+                "light"
+            } else {
+                "dark"
+            };
+            format!("Following Windows — {resolved}")
+        }
+    }
+}
+
+/// A row of segments, the active one filled with the accent.
+///
+/// Shared by the noise mode row and the Appearance row deliberately: the panel
+/// teaches this pattern once and a second use costs the user nothing to learn.
+/// Two copies would drift.
+fn segmented(b: &mut Builder, row: Rect, segments: &[(&str, HitTarget)], active: Option<usize>) {
+    b.card(row, bg_card(), border_card());
+    let seg_w = row.w / segments.len() as f32;
+
+    for (i, (label, target)) in segments.iter().enumerate() {
+        let seg = Rect::new(row.x + seg_w * i as f32, row.y, seg_w, row.h);
+        let is_active = active == Some(i);
+        if is_active {
+            // Inset so the fill sits inside the container's border rather than
+            // doubling it.
+            let fill = Rect::new(seg.x + 2.0, seg.y + 2.0, seg.w - 4.0, seg.h - 4.0);
+            b.p.push(Primitive::RoundRect {
+                rect: fill,
+                radius: BUTTON_RADIUS,
+                fill: Some(b.tint(accent().with_alpha(0x33))),
+                stroke: Some(b.tint(accent())),
+                stroke_w: 1.5,
+            });
+        }
+        b.caption(
+            Rect::new(seg.x, seg.y, seg.w, seg.h),
+            label,
+            b.tint(if is_active {
+                accent_label()
+            } else {
+                text_secondary()
+            }),
+            Align::Center,
+        );
+        if !b.dim {
+            b.hits.push((seg, *target));
+        }
+    }
+}
+
 /// The noise-control block: a caption row, a three-segment mode row, and the
 /// ANC level track.
 ///
@@ -786,43 +849,16 @@ fn noise_section(
 
     // ---- three-segment mode row -------------------------------------------
     let row = Rect::new(MARGIN, *y, CONTENT_W, SEGMENT_H);
-    b.card(row, bg_card(), border_card());
-
-    let seg_w = CONTENT_W / 3.0;
-    let segments = [
-        ("OFF", HitTarget::NoiseOff),
-        ("ANC", HitTarget::NoiseAnc),
-        ("AMBIENT", HitTarget::NoiseAmbient),
-    ];
-    for (i, (label, target)) in segments.into_iter().enumerate() {
-        let seg = Rect::new(row.x + seg_w * i as f32, row.y, seg_w, row.h);
-        let is_active = active == Some(i);
-        if is_active {
-            // Inset so the fill sits inside the container's border rather than
-            // doubling it.
-            let fill = Rect::new(seg.x + 2.0, seg.y + 2.0, seg.w - 4.0, seg.h - 4.0);
-            b.p.push(Primitive::RoundRect {
-                rect: fill,
-                radius: BUTTON_RADIUS,
-                fill: Some(b.tint(accent().with_alpha(0x33))),
-                stroke: Some(b.tint(accent())),
-                stroke_w: 1.5,
-            });
-        }
-        b.caption(
-            Rect::new(seg.x, seg.y, seg.w, seg.h),
-            label,
-            b.tint(if is_active {
-                accent_label()
-            } else {
-                text_secondary()
-            }),
-            Align::Center,
-        );
-        if !b.dim {
-            b.hits.push((seg, target));
-        }
-    }
+    segmented(
+        b,
+        row,
+        &[
+            ("OFF", HitTarget::NoiseOff),
+            ("ANC", HitTarget::NoiseAnc),
+            ("AMBIENT", HitTarget::NoiseAmbient),
+        ],
+        active,
+    );
     *y = row.bottom() + 20.0;
 
     // ---- ANC level track ---------------------------------------------------
@@ -984,6 +1020,44 @@ fn settings_body(b: &mut Builder, _state: &HeadsetState, y: &mut f32) {
         *y = card.bottom() + 12.0;
     }
 
+    // ---- appearance --------------------------------------------------------
+    // Taller than a toggle row: it carries a segmented control rather than a
+    // pill, because three states cannot be expressed by a switch.
+    let card = Rect::new(MARGIN, *y, CONTENT_W, 78.0);
+    b.card(card, bg_card(), border_card());
+    b.text(
+        Rect::new(card.x + 16.0, card.y + 10.0, card.w - 32.0, 20.0),
+        "Appearance",
+        FS_BODY,
+        W_SEMIBOLD,
+        text_primary(),
+        Align::Left,
+    );
+    b.text(
+        Rect::new(card.x + 16.0, card.y + 28.0, card.w - 32.0, 18.0),
+        &appearance_subtitle(crate::settings::appearance()),
+        FS_DESCRIPTION,
+        W_REGULAR,
+        text_secondary(),
+        Align::Left,
+    );
+    let active = match crate::settings::appearance() {
+        Appearance::System => 0,
+        Appearance::Dark => 1,
+        Appearance::Light => 2,
+    };
+    segmented(
+        b,
+        Rect::new(card.x + 12.0, card.y + 46.0, card.w - 24.0, 26.0),
+        &[
+            ("AUTO", HitTarget::AppearanceSystem),
+            ("DARK", HitTarget::AppearanceDark),
+            ("LIGHT", HitTarget::AppearanceLight),
+        ],
+        Some(active),
+    );
+    *y = card.bottom() + 12.0;
+
     // Back button
     let back = Rect::new(MARGIN, *y + 4.0, 88.0, 34.0);
     b.p.push(Primitive::RoundRect {
@@ -1027,7 +1101,7 @@ fn toggle(b: &mut Builder, r: Rect, on: bool) {
         cx: knob_x,
         cy: r.center_y(),
         r: r.h / 2.0 - 3.0,
-        fill: Some(if on { text_primary() } else { text_secondary() }),
+        fill: Some(if on { toggle_knob() } else { text_secondary() }),
         stroke: None,
         stroke_w: 0.0,
     });
@@ -1563,6 +1637,44 @@ mod tests {
             None,
         );
         assert_eq!(knob_x(&p, level_row_y()), None);
+    }
+
+    #[test]
+    fn the_settings_view_offers_all_three_appearance_choices() {
+        let p = build(&connected(), View::Settings, SliderParam::GameChat, None);
+        let ts = targets(&p);
+        for want in [
+            HitTarget::AppearanceSystem,
+            HitTarget::AppearanceDark,
+            HitTarget::AppearanceLight,
+        ] {
+            assert!(ts.contains(&want), "{want:?} is not reachable");
+        }
+    }
+
+    #[test]
+    fn the_appearance_segments_do_not_overlap() {
+        let p = build(&connected(), View::Settings, SliderParam::GameChat, None);
+        let seg = |t: HitTarget| p.hits.iter().find(|(_, h)| *h == t).expect("present").0;
+        let (a, b, c) = (
+            seg(HitTarget::AppearanceSystem),
+            seg(HitTarget::AppearanceDark),
+            seg(HitTarget::AppearanceLight),
+        );
+        assert!(a.right() <= b.x, "system overlaps dark");
+        assert!(b.right() <= c.x, "dark overlaps light");
+    }
+
+    #[test]
+    fn the_appearance_subtitle_says_what_actually_resolved() {
+        // AUTO must not be a black box: a user whose Windows is dark and who
+        // picks AUTO should be able to see why the panel stayed dark.
+        use headset_protocol as _;
+        assert_eq!(appearance_subtitle(Appearance::Light), "Light theme");
+        assert_eq!(appearance_subtitle(Appearance::Dark), "Dark theme");
+        let s = appearance_subtitle(Appearance::System);
+        assert!(s.starts_with("Following Windows"), "{s}");
+        assert!(s.ends_with("light") || s.ends_with("dark"), "{s}");
     }
 
     #[test]
