@@ -157,7 +157,7 @@ observed to change with it; see the Unknown bytes policy.
 | `0x20` | `0x0020` | — | link state | 2 bytes | `00 00` while the headset was off; `01 00` pushed at the instant it was powered on, followed by the host reading every other parameter |
 | `0x21` | `0x8021` | — | battery level | 0–100 | Read returned `0x34` while the vendor UI showed 52; an event later reported `0x31` after the user observed the level falling |
 | `0x19` | `0x8019` | `0x8099` | sidetone level | 0–15 | Slider moved end to end; values clamped at `0x00` and `0x0F` while still turning |
-| `0x5C` | `0x805C` | `0x80DC` | game/chat balance | 0–20 | Same clamping evidence at `0x00` and `0x14`; centre `0x0A` |
+| `0x5C` | `0x805C` | `0x80DC` | game/chat balance | 0–20 | Same clamping evidence at `0x00` and `0x14`; centre `0x0A`. `0x00` is full **game**, `0x14` full **chat** — established by listening, not by the captures, which carry no direction |
 | `0x55` | `0x8055` | — | mic mute (hardware switch) | 0/1 | Events on the headset's physical mute; no write ever observed, and the vendor UI exposes no mute control |
 | `0x6A` | `0x806A` | `0x80EA` | onboard slider function | ≥3 states | Toggling which parameter the wheel drives changed this value; the wheel then reported through a different parameter |
 | `0x12` | `0x8012` | `0x8092` | noise control (mode + ANC level) | 2 bytes; see below | Three capture sessions isolating noise cancellation off/on, mode switching, and level 4→3→2→1→4 |

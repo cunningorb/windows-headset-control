@@ -156,7 +156,9 @@ impl SliderParam {
     pub fn end_labels(self) -> [&'static str; 3] {
         match self {
             SliderParam::Sidetone => ["OFF", "", "MAX"],
-            SliderParam::GameChat => ["CHAT", "BALANCED", "GAME"],
+            // Low values are game, high values are chat: verified by listening,
+            // not by the captures, which never established the direction.
+            SliderParam::GameChat => ["GAME", "BALANCED", "CHAT"],
         }
     }
     pub fn other(self) -> SliderParam {
@@ -201,8 +203,8 @@ pub fn format_value(param: SliderParam, value: Option<u8>) -> String {
         }
         SliderParam::GameChat => match v.cmp(&10) {
             std::cmp::Ordering::Equal => "Balanced".to_string(),
-            std::cmp::Ordering::Greater => format!("Game +{}", v - 10),
-            std::cmp::Ordering::Less => format!("Chat +{}", 10 - v),
+            std::cmp::Ordering::Greater => format!("Chat +{}", v - 10),
+            std::cmp::Ordering::Less => format!("Game +{}", 10 - v),
         },
     }
 }
@@ -1380,8 +1382,8 @@ mod tests {
     fn value_text_matches_the_mockups_exactly() {
         use SliderParam::*;
         assert_eq!(format_value(GameChat, Some(10)), "Balanced");
-        assert_eq!(format_value(GameChat, Some(17)), "Game +7");
-        assert_eq!(format_value(GameChat, Some(3)), "Chat +7");
+        assert_eq!(format_value(GameChat, Some(17)), "Chat +7");
+        assert_eq!(format_value(GameChat, Some(3)), "Game +7");
         assert_eq!(format_value(Sidetone, Some(0)), "Off");
         assert_eq!(format_value(Sidetone, Some(14)), "14");
     }
@@ -1782,7 +1784,7 @@ mod tests {
         let has_text = p
             .primitives
             .iter()
-            .any(|prim| matches!(prim, Primitive::Text { text, .. } if text == "Game +7"));
+            .any(|prim| matches!(prim, Primitive::Text { text, .. } if text == "Chat +7"));
         assert!(
             has_text,
             "the dragged value should be shown, not the stored one"
