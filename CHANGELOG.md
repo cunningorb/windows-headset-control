@@ -4,7 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.0-alpha.2] - 2026-08-05
+
+### Fixed
+
+- **The game/chat slider ran backwards.** The panel labelled low values CHAT and high
+  values GAME, so dragging toward GAME moved the mix toward chat. `0x00` is full game and
+  `0x14` full chat — a direction the captures never established, since they record the
+  range and the clamps but not which end is which.
 
 ### Added
 
