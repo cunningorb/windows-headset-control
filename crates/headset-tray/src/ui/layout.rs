@@ -110,6 +110,16 @@ pub enum HitTarget {
     Refresh,
     ToggleStartup,
     ToggleWarning,
+    /// Turns the power-off output switch on or off.
+    ToggleOutputSwitch,
+    /// Opens the device picker.
+    OpenOutputPicker,
+    /// One device in the picker, by its position in the drawn list. Positional
+    /// rather than carrying the id because [`HitTarget`] is `Copy` and a `String`
+    /// is not; [`Panel::output_ids`] resolves it against the list that was
+    /// actually drawn, so a device appearing or vanishing between the paint and
+    /// the click cannot silently select a different one.
+    OutputChoice(usize),
     /// The three segments of the noise-mode row, in drawn order.
     NoiseOff,
     NoiseAnc,
@@ -126,6 +136,8 @@ pub enum HitTarget {
 pub enum View {
     Main,
     Settings,
+    /// The output-device picker, reached from Settings.
+    Output,
 }
 
 /// Which parameter the single slider is currently driving.
@@ -240,6 +252,10 @@ pub struct Panel {
     pub track: Option<TrackGeometry>,
     /// ANC level track, present only while the mode is ANC.
     pub level_track: Option<LevelTrack>,
+    /// Endpoint ids in the order they were drawn, so a
+    /// [`HitTarget::OutputChoice`] resolves against this paint rather than a
+    /// fresh enumeration. Empty in every view but [`View::Output`].
+    pub output_ids: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -392,6 +408,7 @@ pub fn build(state: &HeadsetState, view: View, param: SliderParam, preview: Opti
 
     let mut track = None;
     let mut level_track = None;
+    let mut output_ids = Vec::new();
     match view {
         View::Main => main_body(
             &mut b,
@@ -403,6 +420,7 @@ pub fn build(state: &HeadsetState, view: View, param: SliderParam, preview: Opti
             &mut level_track,
         ),
         View::Settings => settings_body(&mut b, state, &mut y),
+        View::Output => output_body(&mut b, &mut y, &mut output_ids),
     }
 
     // Footer
@@ -431,6 +449,7 @@ pub fn build(state: &HeadsetState, view: View, param: SliderParam, preview: Opti
         height,
         track,
         level_track,
+        output_ids,
     }
 }
 
@@ -473,7 +492,10 @@ fn header(b: &mut Builder, state: &HeadsetState, view: View, y: &mut f32) {
 
     // Gear / Back button, top right.
     let btn = Rect::new(MARGIN + CONTENT_W - 30.0, *y - 2.0, 30.0, 30.0);
-    let active = view == View::Settings;
+    // Every view but the main one is somewhere you came from somewhere else, so
+    // the header button is Back in all of them. `on_panel_press` decides where
+    // back actually goes.
+    let active = view != View::Main;
     b.p.push(Primitive::RoundRect {
         rect: btn,
         radius: BUTTON_RADIUS,
@@ -976,7 +998,7 @@ fn settings_body(b: &mut Builder, _state: &HeadsetState, y: &mut f32) {
     );
     *y += 22.0;
 
-    let rows: [(&str, &str, HitTarget, bool); 2] = [
+    let rows: [(&str, &str, HitTarget, bool); 3] = [
         (
             "Start on Windows startup",
             "Launch the tray app when you sign in.",
@@ -988,6 +1010,16 @@ fn settings_body(b: &mut Builder, _state: &HeadsetState, y: &mut f32) {
             "Warn when Synapse may override settings.",
             HitTarget::ToggleWarning,
             crate::settings_show_warning(),
+        ),
+        // Kept short enough to stay on one line. The title box is vertically
+        // centred, so a wrapped title grows upward into the row above it and
+        // downward into its own description -- the same trap the description
+        // box's width is sized against.
+        (
+            "Switch output when off",
+            "Move Windows sound elsewhere, and back.",
+            HitTarget::ToggleOutputSwitch,
+            crate::settings_switch_output(),
         ),
     ];
 
@@ -1021,6 +1053,37 @@ fn settings_body(b: &mut Builder, _state: &HeadsetState, y: &mut f32) {
         b.hits.push((card, target));
         *y = card.bottom() + 12.0;
     }
+
+    // ---- which device to switch to -----------------------------------------
+    // Always shown, and always clickable, even with the switch turned off: a
+    // user who has not chosen a device yet needs somewhere to choose one, and
+    // making the row appear only after the toggle is on hides the very thing
+    // that makes the toggle do anything.
+    let card = Rect::new(MARGIN, *y, CONTENT_W, 62.0);
+    b.card(card, bg_card(), border_card());
+    b.text(
+        Rect::new(card.x + 16.0, card.y + 10.0, card.w - 48.0, 18.0),
+        "Play through",
+        FS_BODY,
+        W_SEMIBOLD,
+        text_primary(),
+        Align::Left,
+    );
+    let chosen = crate::settings_fallback_output();
+    b.text(
+        Rect::new(card.x + 16.0, card.y + 30.0, card.w - 48.0, 20.0),
+        &fallback_output_subtitle(chosen.as_ref().map(|(n, p)| (n.as_str(), *p))),
+        FS_DESCRIPTION,
+        W_REGULAR,
+        // An absent device is stated in the ordinary secondary colour rather
+        // than an alarm colour: it is a fact about the machine right now, not
+        // an error the user made.
+        text_secondary(),
+        Align::Left,
+    );
+    chevron_icon(b, card.right() - 22.0, card.center_y(), text_muted());
+    b.hits.push((card, HitTarget::OpenOutputPicker));
+    *y = card.bottom() + 12.0;
 
     // ---- appearance --------------------------------------------------------
     // Taller than a toggle row: it carries a segmented control rather than a
@@ -1062,6 +1125,105 @@ fn settings_body(b: &mut Builder, _state: &HeadsetState, y: &mut f32) {
 
     // Back button
     let back = Rect::new(MARGIN, *y + 4.0, 88.0, 34.0);
+    b.p.push(Primitive::RoundRect {
+        rect: back,
+        radius: BUTTON_RADIUS,
+        fill: Some(bg_card()),
+        stroke: Some(border_card()),
+        stroke_w: 1.0,
+    });
+    back_icon(b, back.x + 18.0, back.center_y(), text_primary());
+    b.text(
+        Rect::new(back.x + 30.0, back.y, back.w - 34.0, back.h),
+        "Back",
+        FS_BODY,
+        W_SEMIBOLD,
+        text_primary(),
+        Align::Left,
+    );
+    b.hits.push((back, HitTarget::Back));
+    *y = back.bottom() + GAP * 0.5;
+}
+
+/// What the "Play through" row says beneath its title.
+///
+/// `chosen` is the stored device's name and whether it is present on the
+/// machine right now. A stored device that is currently absent is named rather
+/// than hidden: "Speakers (Realtek Audio)" being unplugged is worth seeing, and
+/// falling back to "Choose a device" would suggest the setting was never made.
+pub fn fallback_output_subtitle(chosen: Option<(&str, bool)>) -> String {
+    match chosen {
+        Some((name, true)) => name.to_string(),
+        Some((name, false)) => format!("{name} — not connected"),
+        None => "Choose a device".to_string(),
+    }
+}
+
+/// The output picker: every active playback device, with the chosen one marked.
+///
+/// A list rather than a native dropdown because the panel is a layered window
+/// that hides as soon as it loses activation — opening a menu owned by another
+/// window would close the very panel the menu belongs to.
+fn output_body(b: &mut Builder, y: &mut f32, ids: &mut Vec<String>) {
+    b.caption(
+        Rect::new(MARGIN, *y, CONTENT_W, 14.0),
+        "PLAY THROUGH WHEN POWERED OFF",
+        text_secondary(),
+        Align::Left,
+    );
+    *y += 22.0;
+
+    let devices = crate::output_devices();
+    let chosen_id = crate::settings_fallback_output_id();
+
+    if devices.is_empty() {
+        let card = Rect::new(MARGIN, *y, CONTENT_W, 44.0);
+        b.card(card, bg_card(), border_card());
+        b.text(
+            Rect::new(card.x + 16.0, card.y, card.w - 32.0, card.h),
+            "No playback devices found",
+            FS_BODY,
+            W_REGULAR,
+            text_secondary(),
+            Align::Left,
+        );
+        *y = card.bottom() + 12.0;
+    }
+
+    // Every device, never a truncated list: silently dropping the one the user
+    // was looking for is worse than a tall panel on a machine with many.
+    for (i, (id, name)) in devices.iter().enumerate() {
+        let selected = chosen_id.as_deref() == Some(id.as_str());
+        let card = Rect::new(MARGIN, *y, CONTENT_W, 44.0);
+        b.p.push(Primitive::RoundRect {
+            rect: card,
+            radius: CARD_RADIUS,
+            fill: Some(if selected {
+                accent().with_alpha(0x22)
+            } else {
+                bg_card()
+            }),
+            stroke: Some(if selected { accent() } else { border_card() }),
+            stroke_w: 1.0,
+        });
+        b.text(
+            Rect::new(card.x + 16.0, card.y, card.w - 52.0, card.h),
+            name,
+            FS_BODY,
+            if selected { W_SEMIBOLD } else { W_REGULAR },
+            text_primary(),
+            Align::Left,
+        );
+        if selected {
+            check_icon(b, card.right() - 24.0, card.center_y(), accent());
+        }
+        b.hits.push((card, HitTarget::OutputChoice(i)));
+        ids.push(id.clone());
+        *y = card.bottom() + 8.0;
+    }
+
+    *y += 4.0;
+    let back = Rect::new(MARGIN, *y, 88.0, 34.0);
     b.p.push(Primitive::RoundRect {
         rect: back,
         radius: BUTTON_RADIUS,
@@ -1286,6 +1448,27 @@ fn refresh_icon(b: &mut Builder, cx: f32, cy: f32) {
         fill: None,
         stroke: Some(c),
         stroke_w: 1.4,
+    });
+}
+
+/// The "opens another screen" chevron, pointing the way the panel will move.
+fn chevron_icon(b: &mut Builder, cx: f32, cy: f32, c: Color) {
+    b.p.push(Primitive::Path {
+        points: vec![(cx - 2.5, cy - 4.5), (cx + 2.5, cy), (cx - 2.5, cy + 4.5)],
+        closed: false,
+        fill: None,
+        stroke: Some(c),
+        stroke_w: 1.6,
+    });
+}
+
+fn check_icon(b: &mut Builder, cx: f32, cy: f32, c: Color) {
+    b.p.push(Primitive::Path {
+        points: vec![(cx - 5.0, cy), (cx - 1.5, cy + 3.5), (cx + 5.0, cy - 4.0)],
+        closed: false,
+        fill: None,
+        stroke: Some(c),
+        stroke_w: 1.8,
     });
 }
 
@@ -1776,6 +1959,87 @@ mod tests {
             assert!(p.hits.iter().any(|(_, t)| *t == want), "{want:?} missing");
         }
         assert!(p.track.is_none(), "settings has no slider");
+    }
+
+    #[test]
+    fn settings_offers_the_output_switch_and_a_way_to_choose_a_device() {
+        let p = build(&connected(), View::Settings, SliderParam::Sidetone, None);
+        for want in [HitTarget::ToggleOutputSwitch, HitTarget::OpenOutputPicker] {
+            assert!(p.hits.iter().any(|(_, t)| *t == want), "{want:?} missing");
+        }
+    }
+
+    #[test]
+    fn the_picker_row_is_reachable_even_with_the_switch_turned_off() {
+        // The row is what makes the toggle mean anything, so hiding it until
+        // the toggle is on would leave a switch with nothing to switch to.
+        let p = build(&connected(), View::Settings, SliderParam::Sidetone, None);
+        let row = p
+            .hits
+            .iter()
+            .find(|(_, t)| *t == HitTarget::OpenOutputPicker)
+            .expect("the picker row must always be present")
+            .0;
+        assert!(row.w > 0.0 && row.h > 0.0);
+    }
+
+    #[test]
+    fn the_output_subtitle_distinguishes_unset_from_unplugged() {
+        // Three different facts, and collapsing any two of them misleads: no
+        // choice made, a choice that is live, and a choice that is currently
+        // absent from the machine.
+        assert_eq!(fallback_output_subtitle(None), "Choose a device");
+        assert_eq!(
+            fallback_output_subtitle(Some(("Speakers (Realtek(R) Audio)", true))),
+            "Speakers (Realtek(R) Audio)"
+        );
+        let gone = fallback_output_subtitle(Some(("Speakers (Realtek(R) Audio)", false)));
+        assert!(gone.starts_with("Speakers (Realtek(R) Audio)"), "{gone}");
+        assert!(gone.contains("not connected"), "{gone}");
+    }
+
+    #[test]
+    fn the_picker_view_lists_ids_in_the_order_it_drew_them() {
+        // Off Windows the device list is empty, so this pins the invariant that
+        // holds either way: one id recorded per drawn choice, in the same order.
+        // A mismatch is how a click selects a device the user did not see.
+        let p = build(&connected(), View::Output, SliderParam::Sidetone, None);
+        let choices: Vec<usize> = p
+            .hits
+            .iter()
+            .filter_map(|(_, t)| match t {
+                HitTarget::OutputChoice(i) => Some(*i),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(choices.len(), p.output_ids.len());
+        assert!(
+            choices.iter().enumerate().all(|(n, i)| n == *i),
+            "choice indices must be positional: {choices:?}"
+        );
+    }
+
+    #[test]
+    fn the_picker_view_can_always_be_left() {
+        // A view with a list that may be empty still needs a way out.
+        let p = build(&connected(), View::Output, SliderParam::Sidetone, None);
+        assert!(p.hits.iter().any(|(_, t)| *t == HitTarget::Back));
+        assert!(p.track.is_none(), "the picker has no slider");
+    }
+
+    #[test]
+    fn only_the_main_view_offers_the_gear() {
+        // Settings and the picker are both places you arrive at, so both show
+        // Back. Offering Gear inside Settings would be a button to where you are.
+        let main = build(&connected(), View::Main, SliderParam::Sidetone, None);
+        assert!(main.hits.iter().any(|(_, t)| *t == HitTarget::Gear));
+        for view in [View::Settings, View::Output] {
+            let p = build(&connected(), view, SliderParam::Sidetone, None);
+            assert!(
+                !p.hits.iter().any(|(_, t)| *t == HitTarget::Gear),
+                "{view:?} must not offer the gear"
+            );
+        }
     }
 
     #[test]

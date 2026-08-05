@@ -31,6 +31,10 @@ pub const APP_NAME: &str = "HeadsetTray";
 const APP_KEY: &str = r"Software\HeadsetTray";
 const SYNAPSE_WARNING_VALUE: &str = "ShowSynapseWarning";
 const APPEARANCE_VALUE: &str = "Appearance";
+const OUTPUT_SWITCH_VALUE: &str = "SwitchOutputWhenOff";
+const FALLBACK_OUTPUT_ID_VALUE: &str = "FallbackOutputId";
+const FALLBACK_OUTPUT_NAME_VALUE: &str = "FallbackOutputName";
+const RESTORE_OUTPUT_VALUE: &str = "RestoreOutputId";
 
 /// Where Windows keeps the user's light-or-dark preference for applications.
 const PERSONALIZE_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
@@ -236,6 +240,60 @@ pub fn set_show_synapse_warning(enabled: bool) -> bool {
     set_dword(APP_KEY, SYNAPSE_WARNING_VALUE, u32::from(enabled))
 }
 
+/// Whether to move Windows' sound elsewhere while the headset is powered down.
+///
+/// Defaults to **off**, unlike the Synapse warning. Changing which device the
+/// whole machine plays through is not something to start doing to somebody who
+/// never asked for it.
+pub fn switch_output_when_off() -> bool {
+    read_dword(HKEY_CURRENT_USER, APP_KEY, OUTPUT_SWITCH_VALUE) == Some(1)
+}
+
+pub fn set_switch_output_when_off(enabled: bool) -> bool {
+    set_dword(APP_KEY, OUTPUT_SWITCH_VALUE, u32::from(enabled))
+}
+
+/// The device to switch to, as `(endpoint id, name at the time it was chosen)`.
+///
+/// Both are stored because they answer different questions. The id is what the
+/// switch acts on and is stable across reboots and renames; the name is only so
+/// the settings panel can say what was chosen without enumerating devices, and
+/// can still name it when that device is currently absent.
+pub fn fallback_output() -> Option<(String, String)> {
+    let id = read_string(HKEY_CURRENT_USER, APP_KEY, FALLBACK_OUTPUT_ID_VALUE)?;
+    if id.is_empty() {
+        return None;
+    }
+    let name = read_string(HKEY_CURRENT_USER, APP_KEY, FALLBACK_OUTPUT_NAME_VALUE)
+        .unwrap_or_else(|| id.clone());
+    Some((id, name))
+}
+
+pub fn set_fallback_output(id: &str, name: &str) -> bool {
+    set_string(APP_KEY, FALLBACK_OUTPUT_ID_VALUE, id)
+        && set_string(APP_KEY, FALLBACK_OUTPUT_NAME_VALUE, name)
+}
+
+/// The endpoint to put back when the headset returns, or `None` when nothing
+/// has been switched away from.
+///
+/// Persisted rather than held in memory because presence *is* the state: this
+/// value existing means "we moved the sound and owe the user a move back". A
+/// tray that is closed, updated, or killed while the headset is off would
+/// otherwise forget its debt and strand the sound on the speakers.
+pub fn restore_output() -> Option<String> {
+    read_string(HKEY_CURRENT_USER, APP_KEY, RESTORE_OUTPUT_VALUE).filter(|s| !s.is_empty())
+}
+
+/// Records what to restore, or clears the record once it has been restored.
+pub fn set_restore_output(id: Option<&str>) -> bool {
+    match id {
+        Some(id) => set_string(APP_KEY, RESTORE_OUTPUT_VALUE, id),
+        // Absent is the "nothing owed" state, so a missing value is success.
+        None => delete_value(APP_KEY, RESTORE_OUTPUT_VALUE) || restore_output().is_none(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,6 +335,28 @@ mod tests {
         assert_eq!(read_dword(HKEY_CURRENT_USER, SCRATCH, "Flag"), Some(0));
         assert!(delete_value(SCRATCH, "Flag"));
         assert_eq!(read_dword(HKEY_CURRENT_USER, SCRATCH, "Flag"), None);
+    }
+
+    /// Round-trips the real setting, restoring whatever the machine had. The
+    /// property under test is that *absence* is the "nothing owed" state, since
+    /// the whole restore mechanism is built on presence meaning a debt.
+    #[test]
+    fn clearing_the_restore_record_leaves_nothing_behind() {
+        let previous = restore_output();
+
+        assert!(set_restore_output(Some("{0.0.0.00000000}.{test}")));
+        assert_eq!(restore_output().as_deref(), Some("{0.0.0.00000000}.{test}"));
+        assert!(set_restore_output(None));
+        assert_eq!(restore_output(), None, "a cleared debt must not linger");
+        // An empty string is a value, but not a debt: reading it back as one
+        // would make the tray try to restore an endpoint that cannot exist.
+        assert!(set_string(APP_KEY, RESTORE_OUTPUT_VALUE, ""));
+        assert_eq!(restore_output(), None);
+        assert!(set_restore_output(None));
+
+        if let Some(p) = previous {
+            assert!(set_restore_output(Some(&p)));
+        }
     }
 
     #[test]

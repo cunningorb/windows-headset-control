@@ -102,12 +102,15 @@ flagged with `supported_device: false` plus a stderr warning when it does.
 `headset-protocol` declares `#![forbid(unsafe_code)]`: it has zero operating-system
 access and needs none.
 
-`unsafe` is confined to exactly **two** modules in the workspace:
+`unsafe` is confined to the workspace's two Win32 areas:
 
 - `crates/headset-device/src/windows/ffi.rs` — raw SetupAPI and `hid.dll`, including
   `HidD_SetOutputReport` for the write path.
-- `crates/headset-tray/src/win32/mod.rs` — the notification icon, popup menus, message
-  loop, process check, and Core Audio.
+- `crates/headset-tray/src/win32/` — the notification icon, popup menus, message loop,
+  process check, and Core Audio. Within it, `audio.rs` is the only place in the workspace
+  that calls an interface Windows does not document; it is set apart precisely so that
+  exception is one file rather than a line buried in the message loop. See
+  [`undocumented-apis.md`](undocumented-apis.md).
 
 The second one is a deliberate Phase 2 trade. Phase 1 stated that `headset-tray` would be
 entirely safe Rust, which assumed it would take a tray-icon crate. Phase 2's footprint
@@ -116,6 +119,24 @@ another heavyweight application defeats the purpose — so the tray calls `Shell
 and Core Audio directly instead. A second confined `unsafe` module was judged the better
 side of that trade. Every other module in every crate is safe Rust, and `headset-cli`
 contains none at all.
+
+## Switching the output device
+
+The tray can move Windows' sound to another device while the headset is powered down, and
+back when it returns. Two things are worth knowing about how it is built:
+
+- **The trigger is the link parameter, not a button.** No power-button event exists in the
+  observed protocol, and none is invented. Holding the power button powers the headset
+  off, and *that* is what parameter `0x20` reports. The link carries no reason, so an
+  auto-sleep and a walk out of range look identical to a deliberate power-off — which is
+  why the switch is debounced rather than immediate.
+- **The way back is a persisted debt, not a remembered device.** When the sound is moved,
+  the endpoint it was moved *from* is written to the registry. Its presence is the state:
+  it means "we owe this user a move back". Holding it in memory would strand somebody on
+  the speakers if the tray were closed, updated, or killed while the headset was off.
+
+Nothing here reaches the headset. Setting the default output has no documented API at all;
+see [`undocumented-apis.md`](undocumented-apis.md).
 
 Microphone mute lives in the tray's Win32 module rather than in `headset-device` because
 it is a USB Audio Class control, not a vendor HID command. The vendor protocol can only

@@ -38,16 +38,17 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
-    DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW, LoadCursorW,
-    PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow,
-    TrackPopupMenu, TranslateMessage, HICON, ICONINFO, IDC_ARROW, MF_SEPARATOR, MF_STRING, MSG,
-    TPM_BOTTOMALIGN, TPM_RIGHTALIGN, WINDOW_EX_STYLE, WM_ACTIVATE, WM_APP, WM_CLOSE, WM_COMMAND,
-    WM_CONTEXTMENU, WM_DESTROY, WM_DPICHANGED, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
-    WM_SETTINGCHANGE, WNDCLASSW, WS_OVERLAPPED,
+    DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW, KillTimer,
+    LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW,
+    SetForegroundWindow, SetTimer, TrackPopupMenu, TranslateMessage, HICON, ICONINFO, IDC_ARROW,
+    MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN, TPM_RIGHTALIGN, WINDOW_EX_STYLE, WM_ACTIVATE,
+    WM_APP, WM_CLOSE, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_DPICHANGED, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MOUSEMOVE, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSW, WS_OVERLAPPED,
 };
 
 // Not part of any public API: these are the tray's own window plumbing, and
 // several are `unsafe` in ways only this module's call sites can uphold.
+pub(crate) mod audio;
 pub(crate) mod dpi;
 pub(crate) mod panel;
 pub(crate) mod place;
@@ -91,6 +92,18 @@ const ID_GAMECHAT_BASE: usize = 200;
 const SIDETONE_MAX: u8 = 15;
 const GAMECHAT_MAX: u8 = 20;
 
+/// Timer that debounces the output switch.
+const ID_OUTPUT_TIMER: usize = 1;
+
+/// How long the link has to hold its new state before the sound is moved.
+///
+/// The link parameter carries no reason, so a deliberate power-off, an
+/// auto-sleep, and a walk out of range are the same event to us. Two seconds is
+/// what stops a momentary dropout from bouncing the whole machine's audio to
+/// the speakers and straight back — which is far more disruptive than reacting
+/// two seconds late to a real power-off.
+const OUTPUT_SWITCH_DEBOUNCE_MS: u32 = 2000;
+
 struct Ctx {
     icon: HICON,
     commands: Sender<Command>,
@@ -125,6 +138,13 @@ struct Ctx {
     /// slider.
     pending_noise: Option<NoiseControl>,
     panel_visible: bool,
+    /// The link state the output switch has already reacted to. `None` until
+    /// the first read lands, which is why a fresh start does not count as a
+    /// transition and does not move anybody's sound.
+    link: Option<bool>,
+    /// Endpoint ids in the order the picker last drew them, so a click resolves
+    /// against that paint rather than a re-enumeration that may have shifted.
+    output_ids: Vec<String>,
 }
 
 thread_local! {
@@ -342,6 +362,8 @@ pub fn run_ui_with<F: FnOnce(isize)>(
                 pending_slider: None,
                 pending_noise: None,
                 panel_visible: false,
+                link: None,
+                output_ids: Vec::new(),
             })
         });
 
@@ -515,12 +537,20 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     // The device has spoken; stop showing what was asked for.
                     ctx.pending_noise = None;
                     ctx.pending_slider = None;
+                    note_link_change(hwnd, ctx);
                     refresh_tray(ctx);
                     if ctx.panel_visible {
                         redraw_panel(ctx);
                     }
                 }
             });
+            LRESULT(0)
+        }
+        // The debounce elapsed and the link has held its new state. Only the
+        // owner window arms this timer; the panel shares the procedure.
+        WM_TIMER if wp.0 == ID_OUTPUT_TIMER && panel::tag(hwnd) != panel::TAG_PANEL => {
+            let _ = KillTimer(hwnd, ID_OUTPUT_TIMER);
+            with_ctx(reconcile_output);
             LRESULT(0)
         }
         WM_LBUTTONDOWN if panel::tag(hwnd) == panel::TAG_PANEL => {
@@ -610,6 +640,91 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     }
 }
 
+/// Notices the headset coming or going, and starts the debounce.
+///
+/// Restarting the timer on every edge is the debounce: a link that flaps twice
+/// inside the window arms it twice and fires once, against whatever state it
+/// finally settled on.
+fn note_link_change(hwnd: HWND, ctx: &mut Ctx) {
+    let now = ctx.state.lock().ok().and_then(|s| s.connected);
+    if now == ctx.link {
+        return;
+    }
+    ctx.link = now;
+    // A vanished dongle reads as `None`, not as a powered-down headset, and is
+    // deliberately not acted on: its endpoints go with it and Windows moves the
+    // sound by itself.
+    if now.is_some() {
+        let _ = unsafe { SetTimer(hwnd, ID_OUTPUT_TIMER, OUTPUT_SWITCH_DEBOUNCE_MS, None) };
+    }
+}
+
+/// Moves the sound, or moves it back, according to where the link settled.
+///
+/// Everything here is best-effort by design. Setting the default output uses an
+/// interface Windows does not document (see `win32::audio`), so a failure is a
+/// thing that can simply happen — and when it does, the user is left exactly
+/// where they were rather than half-moved.
+fn reconcile_output(ctx: &mut Ctx) {
+    if !crate::settings::switch_output_when_off() {
+        return;
+    }
+    match ctx.link {
+        Some(false) => switch_output_away(),
+        Some(true) => switch_output_back(),
+        None => {}
+    }
+}
+
+fn switch_output_away() {
+    // Already away. Without this, a second drop would record the fallback
+    // itself as the endpoint we owe the user a return to, and the way back
+    // would be lost.
+    if crate::settings::restore_output().is_some() {
+        return;
+    }
+    let Some((fallback_id, fallback_name)) = crate::settings::fallback_output() else {
+        tracing::debug!("no output chosen to switch to");
+        return;
+    };
+    let Some(current) = audio::default_output_id() else {
+        return;
+    };
+    if current == fallback_id {
+        // The sound is already there, so there is nothing to move and — more
+        // importantly — nothing to owe. Recording a debt here would move the
+        // user somewhere they never were when the headset came back.
+        return;
+    }
+    if !audio::is_present(&fallback_id) {
+        tracing::info!("{fallback_name} is not connected; leaving the sound where it is");
+        return;
+    }
+    if audio::set_default_output(&fallback_id) {
+        // Recorded only after the move actually took. A debt for a move that
+        // never happened would drag the sound somewhere it never left.
+        let _ = crate::settings::set_restore_output(Some(&current));
+        tracing::info!("headset powered down; sound moved to {fallback_name}");
+    }
+}
+
+fn switch_output_back() {
+    let Some(previous) = crate::settings::restore_output() else {
+        return;
+    };
+    if !audio::is_present(&previous) {
+        // Keep owing it rather than discarding the debt: the endpoint may be
+        // moments from reappearing, and forgetting here would strand the user
+        // on the fallback with nothing left to say where they came from.
+        tracing::info!("the endpoint to restore is not present yet; keeping the record");
+        return;
+    }
+    if audio::set_default_output(&previous) {
+        let _ = crate::settings::set_restore_output(None);
+        tracing::info!("headset back; sound restored");
+    }
+}
+
 /// Renders the current state and pushes it into the layered window.
 fn redraw_panel(ctx: &mut Ctx) {
     let Some(renderer) = ctx.renderer.as_ref() else {
@@ -632,6 +747,7 @@ fn redraw_panel(ctx: &mut Ctx) {
     ctx.hits = panel.hits.clone();
     ctx.track = panel.track;
     ctx.level_track = panel.level_track;
+    ctx.output_ids = panel.output_ids.clone();
 
     let first_show = !ctx.panel_visible;
     unsafe {
@@ -708,7 +824,12 @@ fn on_panel_press(ctx: &mut Ctx, x: f32, y: f32) {
             redraw_panel(ctx);
         }
         HitTarget::Back => {
-            ctx.view = View::Main;
+            // One step back, not all the way out: the picker is reached from
+            // Settings, so leaving it should land where it was opened from.
+            ctx.view = match ctx.view {
+                View::Output => View::Settings,
+                _ => View::Main,
+            };
             redraw_panel(ctx);
         }
         HitTarget::Refresh => {
@@ -769,6 +890,48 @@ fn on_panel_press(ctx: &mut Ctx, x: f32, y: f32) {
                 if let Ok(mut s) = ctx.state.lock() {
                     s.warn_vendor_software = crate::warn_vendor_software();
                 }
+                redraw_panel(ctx);
+            }
+        }
+        HitTarget::ToggleOutputSwitch => {
+            let now = crate::settings::switch_output_when_off();
+            if crate::settings::set_switch_output_when_off(!now) {
+                if now {
+                    // Turning it off cancels any move still owed. The sound is
+                    // left where it is — the user may well be listening to it —
+                    // but a switched-off feature must not act on a later
+                    // power-on.
+                    let _ = crate::settings::set_restore_output(None);
+                } else {
+                    // Turning it on acts on the state the headset is in now.
+                    // Waiting for the next transition would mean switching it
+                    // on with the headset already off and watching nothing
+                    // happen, which reads as a setting that does not work.
+                    reconcile_output(ctx);
+                }
+                redraw_panel(ctx);
+            }
+        }
+        HitTarget::OpenOutputPicker => {
+            ctx.view = View::Output;
+            redraw_panel(ctx);
+        }
+        HitTarget::OutputChoice(i) => {
+            // Resolved against the list this paint drew, then re-read from the
+            // system for its current name: the id is the durable half, and the
+            // stored name is only ever a label for it.
+            if let Some(id) = ctx.output_ids.get(i).cloned() {
+                let name = audio::render_outputs()
+                    .into_iter()
+                    .find(|d| d.id == id)
+                    .map(|d| d.name)
+                    .unwrap_or_else(|| id.clone());
+                let _ = crate::settings::set_fallback_output(&id, &name);
+                // Same reasoning as turning the switch on: choosing the device
+                // is the step that made the setting actionable, so act on where
+                // the headset is now rather than waiting for it to move.
+                reconcile_output(ctx);
+                ctx.view = View::Settings;
                 redraw_panel(ctx);
             }
         }

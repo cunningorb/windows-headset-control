@@ -8,6 +8,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Switch output when off.** Turning the headset off moves Windows' sound to a
+  device you choose, and turning it back on puts it where it was. Off by default. The
+  trigger is the headset's link state — no power-button event exists in the protocol — so
+  an auto-sleep or going out of range counts too, debounced by two seconds. Setting the
+  default output has no documented Windows API; see
+  [`docs/undocumented-apis.md`](docs/undocumented-apis.md).
 - A light theme. It follows your Windows setting by default, with an **Appearance** override
   in settings. High contrast still wins over both.
 

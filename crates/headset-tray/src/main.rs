@@ -188,6 +188,16 @@ fn run_render_panel() {
         SliderParam::GameChat,
     ));
 
+    // The output picker. Its list comes from the machine this runs on, so the
+    // rendered height varies with how many playback devices are attached --
+    // which is the point of rendering it at all.
+    cases.push((
+        "output-picker",
+        base.clone(),
+        View::Output,
+        SliderParam::GameChat,
+    ));
+
     // The three noise modes, so the segment row and the dimmed level track can
     // be diffed the same way every other state is.
     for (name, mode) in [

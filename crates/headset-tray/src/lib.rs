@@ -49,6 +49,36 @@ pub fn settings_show_warning() -> bool {
     settings::show_synapse_warning()
 }
 
+#[cfg(windows)]
+pub fn settings_switch_output() -> bool {
+    settings::switch_output_when_off()
+}
+
+/// The chosen fallback output as `(name, is it plugged in right now)`.
+///
+/// Presence is resolved here rather than in `layout` because it takes a Core
+/// Audio enumeration; the wording built from it stays pure and testable in
+/// `layout::fallback_output_subtitle`.
+#[cfg(windows)]
+pub fn settings_fallback_output() -> Option<(String, bool)> {
+    let (id, name) = settings::fallback_output()?;
+    Some((name, win32::audio::is_present(&id)))
+}
+
+#[cfg(windows)]
+pub fn settings_fallback_output_id() -> Option<String> {
+    settings::fallback_output().map(|(id, _)| id)
+}
+
+/// Every playback device, as `(endpoint id, name)`.
+#[cfg(windows)]
+pub fn output_devices() -> Vec<(String, String)> {
+    win32::audio::render_outputs()
+        .into_iter()
+        .map(|d| (d.id, d.name))
+        .collect()
+}
+
 #[cfg(not(windows))]
 pub fn settings_run_on_startup() -> bool {
     false
@@ -62,4 +92,24 @@ pub fn settings_show_warning() -> bool {
 #[cfg(not(windows))]
 pub fn warn_vendor_software() -> bool {
     false
+}
+
+#[cfg(not(windows))]
+pub fn settings_switch_output() -> bool {
+    false
+}
+
+#[cfg(not(windows))]
+pub fn settings_fallback_output() -> Option<(String, bool)> {
+    None
+}
+
+#[cfg(not(windows))]
+pub fn settings_fallback_output_id() -> Option<String> {
+    None
+}
+
+#[cfg(not(windows))]
+pub fn output_devices() -> Vec<(String, String)> {
+    Vec::new()
 }

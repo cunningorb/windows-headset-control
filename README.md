@@ -68,6 +68,25 @@ with what you asked for, you see the truth.
 Right-click the icon for Refresh and Exit. The gear opens settings: start with Windows, and
 whether to warn you when Synapse is running (it can fight this app for the same settings).
 
+**Switch output when off** moves Windows' sound to another device when the
+headset goes quiet, and puts it back when the headset returns. Turn it on in settings and
+pick the device under **Play through** — your speakers, usually. It's off until you do
+both.
+
+Holding the power button is what turns the headset off, and that's what this reacts to.
+The headset reports that its link dropped, not *why*, so an auto-sleep or walking out of
+range looks the same and will also move your sound. Brief dropouts won't: nothing moves
+until the link has held its new state for a couple of seconds.
+
+It puts you back exactly where you were, not on a guess — the dongle presents two
+playback devices (Game and Chat) and only you know which one you were using. If the tray
+is closed or restarted while your headset is off, it still remembers what it owes you.
+
+Windows offers no supported way for a program to change the default playback device, so
+this uses the same undocumented interface every audio switcher uses. If it ever stops
+working, nothing moves and you're left where you were.
+[`docs/undocumented-apis.md`](docs/undocumented-apis.md) is the full record.
+
 The panel **follows your Windows light or dark setting** by default. **Appearance** in
 settings overrides that — auto, dark, or light. If you use Windows high contrast, it wins
 over all three.
