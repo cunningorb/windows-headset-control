@@ -17,11 +17,13 @@ fn main() {
         "--uninstall" => run_uninstall(),
         "--render-panel" => run_render_panel(),
         "--export-icon" => run_export_icon(),
+        "--explain-output" => run_explain_output(),
         "--help" | "-h" | "/?" => report(
             "Headset Tray",
             "Usage:\n  headset-tray.exe              run the tray\n  \
              headset-tray.exe --install    install and run at logon\n  \
              headset-tray.exe --uninstall  remove startup and the uninstall entry\n  \
+             headset-tray.exe --explain-output   say why the output switch is or is not working\n  \
              headset-tray.exe --export-icon <path.ico>   regenerate the application icon",
         ),
         _ => run_tray(),
@@ -111,6 +113,109 @@ fn run_export_icon() {
     }
 }
 
+/// Explains what the output switch would do, and why, without doing it.
+///
+/// The switch acts on a device event nobody can stage on demand — it needs a
+/// power button held down — and it acts on facts the user cannot see: which
+/// endpoint is default, which endpoint ids still exist, and what the tray
+/// recorded as the way back. When it does nothing, every one of those is a
+/// candidate, and until this existed the only way to tell them apart was to
+/// read the registry by hand.
+///
+/// Read-only: it asks `plan_output` what it would decide for a powered-off and
+/// a powered-on headset and prints both, rather than moving anything.
+#[cfg(windows)]
+fn run_explain_output() {
+    use headset_tray::{output::Action, settings, win32, Slot};
+    use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
+
+    // Core Audio needs an initialised apartment; the tray does this in its own
+    // startup, and this path does not go through it.
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+    }
+
+    let devices = headset_tray::output_devices();
+    let name_of = |id: &str| {
+        devices
+            .iter()
+            .find(|(d, _)| d == id)
+            .map(|(_, n)| n.clone())
+            .unwrap_or_else(|| format!("{id} (no longer on this machine)"))
+    };
+
+    let mut out = Vec::new();
+    out.push(format!(
+        "Switch output when off: {}",
+        if settings::switch_output_when_off() {
+            "on"
+        } else {
+            "off"
+        }
+    ));
+    out.push(match settings::output_choice(Slot::Fallback) {
+        Some((id, name)) => format!("Play through:            {name}\n  {}", name_of(&id)),
+        None => "Play through:            nothing chosen".to_string(),
+    });
+    out.push(format!(
+        "Split game and chat:     {}",
+        if settings::split_game_and_chat() {
+            "on"
+        } else {
+            "off"
+        }
+    ));
+    for (slot, label) in [
+        (Slot::Game, "Game channel:           "),
+        (Slot::Chat, "Chat channel:           "),
+    ] {
+        out.push(match settings::output_choice(slot) {
+            Some((id, name)) => format!("{label} {name}\n  {}", name_of(&id)),
+            None => format!("{label} nothing chosen"),
+        });
+    }
+    out.push(match settings::restore_output() {
+        Some(id) => format!("Owed a move back to:     {}", name_of(&id)),
+        None => "Owed a move back to:     nothing".to_string(),
+    });
+    out.push(match settings::output_problem() {
+        Some(p) => format!("Last problem:            {}", p.short()),
+        None => "Last problem:            none recorded".to_string(),
+    });
+
+    out.push("\nPlayback devices Windows currently has:".into());
+    for (_, name) in &devices {
+        out.push(format!("  {name}"));
+    }
+
+    let describe = |a: Action| match a {
+        Action::Nothing => "nothing to do".to_string(),
+        Action::MoveAway { to, owing } => format!(
+            "move the sound to {}, remembering {}",
+            name_of(&to),
+            name_of(&owing)
+        ),
+        Action::MoveBack { to } => format!("move the sound back to {}", name_of(&to)),
+        Action::Split { game, chat } => format!(
+            "play through {}, and take calls on {}",
+            name_of(&game),
+            name_of(&chat)
+        ),
+        Action::Retry => "wait for the endpoint to reappear".to_string(),
+        Action::GiveUp => "give up on the endpoint owed, and say so".to_string(),
+        Action::Blocked(p) => format!("nothing — {}", p.detail()),
+    };
+    out.push("\nIf the headset powered off right now:".into());
+    out.push(format!(
+        "  {}",
+        describe(win32::plan_output(Some(false), 0))
+    ));
+    out.push("If the headset powered on right now:".into());
+    out.push(format!("  {}", describe(win32::plan_output(Some(true), 0))));
+
+    report("Headset Tray output switch", &out.join("\n"));
+}
+
 /// Renders panel states to PNGs so appearance can be diffed against the
 /// mockups without a window or a headset.
 ///
@@ -191,12 +296,18 @@ fn run_render_panel() {
     // The output picker. Its list comes from the machine this runs on, so the
     // rendered height varies with how many playback devices are attached --
     // which is the point of rendering it at all.
-    cases.push((
-        "output-picker",
-        base.clone(),
-        View::Output,
-        SliderParam::GameChat,
-    ));
+    for (name, slot) in [
+        ("output-picker", headset_tray::Slot::Fallback),
+        ("output-picker-game", headset_tray::Slot::Game),
+        ("output-picker-chat", headset_tray::Slot::Chat),
+    ] {
+        cases.push((
+            name,
+            base.clone(),
+            View::Output(slot),
+            SliderParam::GameChat,
+        ));
+    }
 
     // The three noise modes, so the segment row and the dimmed level track can
     // be diffed the same way every other state is.

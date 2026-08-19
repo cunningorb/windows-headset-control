@@ -111,14 +111,44 @@ pub fn is_present(id: &str) -> bool {
 /// Returns whether every role took. A partial failure is reported as failure —
 /// the caller must not record a successful switch it cannot fully reverse.
 pub fn set_default_output(id: &str) -> bool {
-    let Some(policy) = PolicyConfig::open() else {
-        tracing::warn!("the default-output policy interface is unavailable on this system");
-        return false;
-    };
+    with_policy(|p| set_roles(p, id, &[eConsole, eMultimedia, eCommunications]))
+}
+
+/// Gives ordinary playback to `game` and calls to `chat`.
+///
+/// The same two writes the Sound settings page makes when you pick a "Default
+/// Device" and a separate "Default Communication Device" — which is the whole
+/// point of a headset that presents two endpoints, and the thing
+/// [`set_default_output`] destroys when it puts one endpoint into all three
+/// roles.
+///
+/// Both are attempted even if the first fails, so a machine that refuses one
+/// role still gets the other, and the failure is still reported as one.
+pub fn set_split_output(game: &str, chat: &str) -> bool {
+    with_policy(|p| {
+        let game_ok = set_roles(p, game, &[eConsole, eMultimedia]);
+        let chat_ok = set_roles(p, chat, &[eCommunications]);
+        game_ok && chat_ok
+    })
+}
+
+/// Runs `f` against the policy object, or reports failure if there is none.
+fn with_policy(f: impl FnOnce(&PolicyConfig) -> bool) -> bool {
+    match PolicyConfig::open() {
+        Some(policy) => f(&policy),
+        None => {
+            tracing::warn!("the default-output policy interface is unavailable on this system");
+            false
+        }
+    }
+}
+
+/// Points `roles` at `id`, reporting whether every one of them took.
+fn set_roles(policy: &PolicyConfig, id: &str, roles: &[ERole]) -> bool {
     let wide: Vec<u16> = id.encode_utf16().chain(std::iter::once(0)).collect();
     let mut ok = true;
-    for role in [eConsole, eMultimedia, eCommunications] {
-        let hr = policy.set_default(&wide, role);
+    for role in roles {
+        let hr = policy.set_default(&wide, *role);
         if hr.is_err() {
             tracing::warn!(
                 "setting the default output for role {} failed: {hr:?}",

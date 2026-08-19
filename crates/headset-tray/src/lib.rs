@@ -10,6 +10,7 @@
 
 #![cfg_attr(not(windows), forbid(unsafe_code))]
 
+pub mod output;
 pub mod state;
 pub mod ui;
 pub mod worker;
@@ -21,6 +22,7 @@ pub mod settings;
 #[cfg(windows)]
 pub mod win32;
 
+pub use output::Slot;
 pub use state::HeadsetState;
 pub use worker::Command;
 
@@ -54,20 +56,36 @@ pub fn settings_switch_output() -> bool {
     settings::switch_output_when_off()
 }
 
-/// The chosen fallback output as `(name, is it plugged in right now)`.
+/// Whether the headset's game and chat channels are set apart when it returns.
+#[cfg(windows)]
+pub fn settings_split_game_and_chat() -> bool {
+    settings::split_game_and_chat()
+}
+
+/// What stopped the output switch or the split working last time, if anything.
+///
+/// The panel reads this rather than being told: the failure it describes
+/// happened while the panel was closed, which is the whole reason it is
+/// written down.
+#[cfg(windows)]
+pub fn settings_output_problem() -> Option<output::Problem> {
+    settings::output_problem()
+}
+
+/// A chosen device as `(name, is it plugged in right now)`.
 ///
 /// Presence is resolved here rather than in `layout` because it takes a Core
 /// Audio enumeration; the wording built from it stays pure and testable in
-/// `layout::fallback_output_subtitle`.
+/// `layout::output_choice_subtitle`.
 #[cfg(windows)]
-pub fn settings_fallback_output() -> Option<(String, bool)> {
-    let (id, name) = settings::fallback_output()?;
+pub fn settings_output_choice(slot: Slot) -> Option<(String, bool)> {
+    let (id, name) = settings::output_choice(slot)?;
     Some((name, win32::audio::is_present(&id)))
 }
 
 #[cfg(windows)]
-pub fn settings_fallback_output_id() -> Option<String> {
-    settings::fallback_output().map(|(id, _)| id)
+pub fn settings_output_choice_id(slot: Slot) -> Option<String> {
+    settings::output_choice(slot).map(|(id, _)| id)
 }
 
 /// Every playback device, as `(endpoint id, name)`.
@@ -100,12 +118,22 @@ pub fn settings_switch_output() -> bool {
 }
 
 #[cfg(not(windows))]
-pub fn settings_fallback_output() -> Option<(String, bool)> {
+pub fn settings_split_game_and_chat() -> bool {
+    false
+}
+
+#[cfg(not(windows))]
+pub fn settings_output_problem() -> Option<output::Problem> {
     None
 }
 
 #[cfg(not(windows))]
-pub fn settings_fallback_output_id() -> Option<String> {
+pub fn settings_output_choice(_slot: Slot) -> Option<(String, bool)> {
+    None
+}
+
+#[cfg(not(windows))]
+pub fn settings_output_choice_id(_slot: Slot) -> Option<String> {
     None
 }
 

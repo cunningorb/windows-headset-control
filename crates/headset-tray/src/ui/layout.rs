@@ -6,6 +6,7 @@
 
 use headset_protocol::{NoiseControl, NoiseMode, ANC_LEVEL_RANGE};
 
+use crate::output::{Problem, Slot};
 use crate::state::HeadsetState;
 use crate::ui::theme::*;
 
@@ -112,8 +113,10 @@ pub enum HitTarget {
     ToggleWarning,
     /// Turns the power-off output switch on or off.
     ToggleOutputSwitch,
-    /// Opens the device picker.
-    OpenOutputPicker,
+    /// Turns the game/chat split on or off.
+    ToggleSplit,
+    /// Opens the device picker, for one of the three choices.
+    OpenOutputPicker(Slot),
     /// One device in the picker, by its position in the drawn list. Positional
     /// rather than carrying the id because [`HitTarget`] is `Copy` and a `String`
     /// is not; [`Panel::output_ids`] resolves it against the list that was
@@ -136,8 +139,10 @@ pub enum HitTarget {
 pub enum View {
     Main,
     Settings,
-    /// The output-device picker, reached from Settings.
-    Output,
+    /// The output-device picker, reached from Settings. Carries which of the
+    /// three choices is being made, because the list it draws is the same one
+    /// either way and only the heading and the tick differ.
+    Output(Slot),
 }
 
 /// Which parameter the single slider is currently driving.
@@ -420,7 +425,7 @@ pub fn build(state: &HeadsetState, view: View, param: SliderParam, preview: Opti
             &mut level_track,
         ),
         View::Settings => settings_body(&mut b, state, &mut y),
-        View::Output => output_body(&mut b, &mut y, &mut output_ids),
+        View::Output(slot) => output_body(&mut b, slot, &mut y, &mut output_ids),
     }
 
     // Footer
@@ -998,92 +1003,66 @@ fn settings_body(b: &mut Builder, _state: &HeadsetState, y: &mut f32) {
     );
     *y += 22.0;
 
-    let rows: [(&str, &str, HitTarget, bool); 3] = [
-        (
-            "Start on Windows startup",
-            "Launch the tray app when you sign in.",
-            HitTarget::ToggleStartup,
-            crate::settings_run_on_startup(),
-        ),
-        (
-            "Display Synapse warning",
-            "Warn when Synapse may override settings.",
-            HitTarget::ToggleWarning,
-            crate::settings_show_warning(),
-        ),
-        // Kept short enough to stay on one line. The title box is vertically
-        // centred, so a wrapped title grows upward into the row above it and
-        // downward into its own description -- the same trap the description
-        // box's width is sized against.
-        (
-            "Switch output when off",
-            "Move Windows sound elsewhere, and back.",
-            HitTarget::ToggleOutputSwitch,
-            crate::settings_switch_output(),
-        ),
-    ];
+    // Problems are recorded one at a time, and each belongs to the feature that
+    // earned it. The switch and the split are separate settings that can be on
+    // independently, so a row is only ever shown its own complaint -- and only
+    // while it is on, because a message about something switched off is noise.
+    let switch_on = crate::settings_switch_output();
+    let split_on = crate::settings_split_game_and_chat();
+    let problem = crate::settings_output_problem();
+    let switch_problem = problem.filter(|p| !p.is_about_split() && switch_on);
+    let split_problem = problem.filter(|p| p.is_about_split() && split_on);
 
-    for (title, desc, target, on) in rows {
-        let card = Rect::new(MARGIN, *y, CONTENT_W, 66.0);
-        b.card(card, bg_card(), border_card());
-        b.text(
-            Rect::new(card.x + 16.0, card.y + 12.0, card.w - 76.0, 18.0),
-            title,
-            FS_BODY + 1.0,
-            W_SEMIBOLD,
-            text_primary(),
-            Align::Left,
-        );
-        // Sized to hold the longer description on one line. Text is vertically
-        // centred in its box, so a wrap does not push downward -- it grows both
-        // ways and collides with the title above.
-        b.text(
-            Rect::new(card.x + 16.0, card.y + 34.0, card.w - 62.0, 20.0),
-            desc,
-            FS_DESCRIPTION,
-            W_REGULAR,
-            text_secondary(),
-            Align::Left,
-        );
-        toggle(
-            b,
-            Rect::new(card.right() - 58.0, card.center_y() - 11.0, 42.0, 22.0),
-            on,
-        );
-        b.hits.push((card, target));
-        *y = card.bottom() + 12.0;
-    }
-
-    // ---- which device to switch to -----------------------------------------
+    toggle_row(
+        b,
+        y,
+        "Start on Windows startup",
+        "Launch the tray app when you sign in.",
+        HitTarget::ToggleStartup,
+        crate::settings_run_on_startup(),
+        None,
+    );
+    toggle_row(
+        b,
+        y,
+        "Display Synapse warning",
+        "Warn when Synapse may override settings.",
+        HitTarget::ToggleWarning,
+        crate::settings_show_warning(),
+        None,
+    );
+    toggle_row(
+        b,
+        y,
+        "Switch output when off",
+        "Move Windows sound elsewhere, and back.",
+        HitTarget::ToggleOutputSwitch,
+        switch_on,
+        switch_problem,
+    );
     // Always shown, and always clickable, even with the switch turned off: a
     // user who has not chosen a device yet needs somewhere to choose one, and
     // making the row appear only after the toggle is on hides the very thing
     // that makes the toggle do anything.
-    let card = Rect::new(MARGIN, *y, CONTENT_W, 62.0);
-    b.card(card, bg_card(), border_card());
-    b.text(
-        Rect::new(card.x + 16.0, card.y + 10.0, card.w - 48.0, 18.0),
-        "Play through",
-        FS_BODY,
-        W_SEMIBOLD,
-        text_primary(),
-        Align::Left,
+    device_row(b, y, Slot::Fallback);
+
+    toggle_row(
+        b,
+        y,
+        "Split game and chat",
+        "Calls use the chat channel.",
+        HitTarget::ToggleSplit,
+        split_on,
+        split_problem,
     );
-    let chosen = crate::settings_fallback_output();
-    b.text(
-        Rect::new(card.x + 16.0, card.y + 30.0, card.w - 48.0, 20.0),
-        &fallback_output_subtitle(chosen.as_ref().map(|(n, p)| (n.as_str(), *p))),
-        FS_DESCRIPTION,
-        W_REGULAR,
-        // An absent device is stated in the ordinary secondary colour rather
-        // than an alarm colour: it is a fact about the machine right now, not
-        // an error the user made.
-        text_secondary(),
-        Align::Left,
-    );
-    chevron_icon(b, card.right() - 22.0, card.center_y(), text_muted());
-    b.hits.push((card, HitTarget::OpenOutputPicker));
-    *y = card.bottom() + 12.0;
+    // These two are hidden while the split is off, unlike "Play through". The
+    // toggle immediately above them is what reveals them, so nothing is out of
+    // reach -- and three device rows stacked up, two of them inert, is a
+    // settings page that looks like it is asking for more than it is.
+    if split_on {
+        device_row(b, y, Slot::Game);
+        device_row(b, y, Slot::Chat);
+    }
 
     // ---- appearance --------------------------------------------------------
     // Taller than a toggle row: it carries a segmented control rather than a
@@ -1145,17 +1124,131 @@ fn settings_body(b: &mut Builder, _state: &HeadsetState, y: &mut f32) {
     *y = back.bottom() + GAP * 0.5;
 }
 
-/// What the "Play through" row says beneath its title.
+/// One settings row: a title, a line of description, and a switch.
+///
+/// `problem` replaces the description when the feature this row governs failed.
+/// The failure happens with nobody watching -- the user's evidence is that
+/// their sound did not move -- so the row has to be able to answer "why not"
+/// whenever they get round to asking.
+fn toggle_row(
+    b: &mut Builder,
+    y: &mut f32,
+    title: &str,
+    desc: &str,
+    target: HitTarget,
+    on: bool,
+    problem: Option<Problem>,
+) {
+    let card = Rect::new(MARGIN, *y, CONTENT_W, 66.0);
+    b.card(card, bg_card(), border_card());
+    // Titles are kept short enough to stay on one line. The box is vertically
+    // centred, so a wrapped title grows upward into the row above it and
+    // downward into its own description -- the same trap the description box's
+    // width is sized against.
+    b.text(
+        Rect::new(card.x + 16.0, card.y + 12.0, card.w - 76.0, 18.0),
+        title,
+        FS_BODY + 1.0,
+        W_SEMIBOLD,
+        text_primary(),
+        Align::Left,
+    );
+    // Sized to hold the longer description on one line.
+    //
+    // A failure borrows the muted-microphone red rather than introducing a
+    // colour: theme.rs sampled its palette from the mockups and says so, and
+    // inventing an amber here would be inventing a design decision nobody
+    // made. That red already means "this is not doing what you think".
+    b.text(
+        Rect::new(card.x + 16.0, card.y + 34.0, card.w - 62.0, 20.0),
+        problem.map(|p| p.short()).unwrap_or(desc),
+        FS_DESCRIPTION,
+        W_REGULAR,
+        if problem.is_some() {
+            state_muted()
+        } else {
+            text_secondary()
+        },
+        Align::Left,
+    );
+    toggle(
+        b,
+        Rect::new(card.right() - 58.0, card.center_y() - 11.0, 42.0, 22.0),
+        on,
+    );
+    b.hits.push((card, target));
+    *y = card.bottom() + 12.0;
+}
+
+/// One settings row naming the device chosen for `slot`, opening the picker.
+fn device_row(b: &mut Builder, y: &mut f32, slot: Slot) {
+    let card = Rect::new(MARGIN, *y, CONTENT_W, 62.0);
+    b.card(card, bg_card(), border_card());
+    b.text(
+        Rect::new(card.x + 16.0, card.y + 10.0, card.w - 48.0, 18.0),
+        slot_title(slot),
+        FS_BODY,
+        W_SEMIBOLD,
+        text_primary(),
+        Align::Left,
+    );
+    let chosen = crate::settings_output_choice(slot);
+    b.text(
+        Rect::new(card.x + 16.0, card.y + 30.0, card.w - 48.0, 20.0),
+        &output_choice_subtitle(slot, chosen.as_ref().map(|(n, p)| (n.as_str(), *p))),
+        FS_DESCRIPTION,
+        W_REGULAR,
+        // An absent device is stated in the ordinary secondary colour rather
+        // than an alarm colour: it is a fact about the machine right now, not
+        // an error the user made.
+        text_secondary(),
+        Align::Left,
+    );
+    chevron_icon(b, card.right() - 22.0, card.center_y(), text_muted());
+    b.hits.push((card, HitTarget::OpenOutputPicker(slot)));
+    *y = card.bottom() + 12.0;
+}
+
+/// What a slot's settings row is called.
+fn slot_title(slot: Slot) -> &'static str {
+    match slot {
+        Slot::Fallback => "Play through",
+        Slot::Game => "Game channel",
+        Slot::Chat => "Chat channel",
+    }
+}
+
+/// The picker's heading, and the one place a slot says what it is *for*.
+///
+/// It goes here rather than in the row title because the title shares its line
+/// with a chevron and the device name sits directly under it; "which Windows
+/// role does this take" has nowhere to go in that row, and the picker is where
+/// somebody is actually deciding.
+fn slot_caption(slot: Slot) -> &'static str {
+    match slot {
+        Slot::Fallback => "PLAY THROUGH WHEN POWERED OFF",
+        Slot::Game => "GAME CHANNEL — ORDINARY SOUND",
+        Slot::Chat => "CHAT CHANNEL — CALLS",
+    }
+}
+
+/// What a device row says beneath its title.
 ///
 /// `chosen` is the stored device's name and whether it is present on the
 /// machine right now. A stored device that is currently absent is named rather
 /// than hidden: "Speakers (Realtek Audio)" being unplugged is worth seeing, and
-/// falling back to "Choose a device" would suggest the setting was never made.
-pub fn fallback_output_subtitle(chosen: Option<(&str, bool)>) -> String {
+/// falling back to the prompt would suggest the setting was never made. The
+/// prompt names the slot, because "Choose a device" three times over does not
+/// say which of the three is still unanswered.
+pub fn output_choice_subtitle(slot: Slot, chosen: Option<(&str, bool)>) -> String {
     match chosen {
         Some((name, true)) => name.to_string(),
         Some((name, false)) => format!("{name} — not connected"),
-        None => "Choose a device".to_string(),
+        None => match slot {
+            Slot::Fallback => "Choose a device".to_string(),
+            Slot::Game => "Choose the game channel".to_string(),
+            Slot::Chat => "Choose the chat channel".to_string(),
+        },
     }
 }
 
@@ -1164,17 +1257,17 @@ pub fn fallback_output_subtitle(chosen: Option<(&str, bool)>) -> String {
 /// A list rather than a native dropdown because the panel is a layered window
 /// that hides as soon as it loses activation — opening a menu owned by another
 /// window would close the very panel the menu belongs to.
-fn output_body(b: &mut Builder, y: &mut f32, ids: &mut Vec<String>) {
+fn output_body(b: &mut Builder, slot: Slot, y: &mut f32, ids: &mut Vec<String>) {
     b.caption(
         Rect::new(MARGIN, *y, CONTENT_W, 14.0),
-        "PLAY THROUGH WHEN POWERED OFF",
+        slot_caption(slot),
         text_secondary(),
         Align::Left,
     );
     *y += 22.0;
 
     let devices = crate::output_devices();
-    let chosen_id = crate::settings_fallback_output_id();
+    let chosen_id = crate::settings_output_choice_id(slot);
 
     if devices.is_empty() {
         let card = Rect::new(MARGIN, *y, CONTENT_W, 44.0);
@@ -1964,7 +2057,11 @@ mod tests {
     #[test]
     fn settings_offers_the_output_switch_and_a_way_to_choose_a_device() {
         let p = build(&connected(), View::Settings, SliderParam::Sidetone, None);
-        for want in [HitTarget::ToggleOutputSwitch, HitTarget::OpenOutputPicker] {
+        for want in [
+            HitTarget::ToggleOutputSwitch,
+            HitTarget::ToggleSplit,
+            HitTarget::OpenOutputPicker(Slot::Fallback),
+        ] {
             assert!(p.hits.iter().any(|(_, t)| *t == want), "{want:?} missing");
         }
     }
@@ -1977,10 +2074,46 @@ mod tests {
         let row = p
             .hits
             .iter()
-            .find(|(_, t)| *t == HitTarget::OpenOutputPicker)
+            .find(|(_, t)| *t == HitTarget::OpenOutputPicker(Slot::Fallback))
             .expect("the picker row must always be present")
             .0;
         assert!(row.w > 0.0 && row.h > 0.0);
+    }
+
+    /// The channel rows follow the split toggle, and the toggle is what reveals
+    /// them -- so whichever way the machine running this has it set, the two
+    /// have to agree. A pair of rows shown with the split off would be inert
+    /// controls; a split turned on with no rows would be a setting that cannot
+    /// be finished.
+    #[test]
+    fn the_channel_rows_are_shown_exactly_when_the_split_is_on() {
+        let p = build(&connected(), View::Settings, SliderParam::Sidetone, None);
+        let shown = |slot| {
+            p.hits
+                .iter()
+                .any(|(_, t)| *t == HitTarget::OpenOutputPicker(slot))
+        };
+        let split_on = crate::settings_split_game_and_chat();
+        assert_eq!(shown(Slot::Game), split_on);
+        assert_eq!(shown(Slot::Chat), split_on);
+    }
+
+    /// The three slots are chosen from one picker drawing one list, so the only
+    /// thing telling a user which choice they are making is the wording. Two
+    /// slots sharing a title or a heading would make that guesswork.
+    #[test]
+    fn the_three_slots_are_told_apart_wherever_they_are_named() {
+        let slots = [Slot::Fallback, Slot::Game, Slot::Chat];
+        let titles: std::collections::BTreeSet<&str> =
+            slots.iter().map(|s| slot_title(*s)).collect();
+        let captions: std::collections::BTreeSet<&str> =
+            slots.iter().map(|s| slot_caption(*s)).collect();
+        assert_eq!(titles.len(), slots.len(), "{titles:?}");
+        assert_eq!(captions.len(), slots.len(), "{captions:?}");
+        // The heading is where a channel says which Windows role it takes, so
+        // it has to at least name the channel.
+        assert!(slot_caption(Slot::Game).contains("GAME"));
+        assert!(slot_caption(Slot::Chat).contains("CHAT"));
     }
 
     #[test]
@@ -1988,14 +2121,26 @@ mod tests {
         // Three different facts, and collapsing any two of them misleads: no
         // choice made, a choice that is live, and a choice that is currently
         // absent from the machine.
-        assert_eq!(fallback_output_subtitle(None), "Choose a device");
         assert_eq!(
-            fallback_output_subtitle(Some(("Speakers (Realtek(R) Audio)", true))),
+            output_choice_subtitle(Slot::Fallback, None),
+            "Choose a device"
+        );
+        assert_eq!(
+            output_choice_subtitle(Slot::Fallback, Some(("Speakers (Realtek(R) Audio)", true))),
             "Speakers (Realtek(R) Audio)"
         );
-        let gone = fallback_output_subtitle(Some(("Speakers (Realtek(R) Audio)", false)));
+        let gone =
+            output_choice_subtitle(Slot::Fallback, Some(("Speakers (Realtek(R) Audio)", false)));
         assert!(gone.starts_with("Speakers (Realtek(R) Audio)"), "{gone}");
         assert!(gone.contains("not connected"), "{gone}");
+
+        // An unanswered channel says which channel it is waiting on: three
+        // rows all reading "Choose a device" would not.
+        let prompts: std::collections::BTreeSet<String> = [Slot::Fallback, Slot::Game, Slot::Chat]
+            .iter()
+            .map(|s| output_choice_subtitle(*s, None))
+            .collect();
+        assert_eq!(prompts.len(), 3, "{prompts:?}");
     }
 
     #[test]
@@ -2003,7 +2148,12 @@ mod tests {
         // Off Windows the device list is empty, so this pins the invariant that
         // holds either way: one id recorded per drawn choice, in the same order.
         // A mismatch is how a click selects a device the user did not see.
-        let p = build(&connected(), View::Output, SliderParam::Sidetone, None);
+        let p = build(
+            &connected(),
+            View::Output(Slot::Fallback),
+            SliderParam::Sidetone,
+            None,
+        );
         let choices: Vec<usize> = p
             .hits
             .iter()
@@ -2022,7 +2172,12 @@ mod tests {
     #[test]
     fn the_picker_view_can_always_be_left() {
         // A view with a list that may be empty still needs a way out.
-        let p = build(&connected(), View::Output, SliderParam::Sidetone, None);
+        let p = build(
+            &connected(),
+            View::Output(Slot::Fallback),
+            SliderParam::Sidetone,
+            None,
+        );
         assert!(p.hits.iter().any(|(_, t)| *t == HitTarget::Back));
         assert!(p.track.is_none(), "the picker has no slider");
     }
@@ -2033,7 +2188,7 @@ mod tests {
         // Back. Offering Gear inside Settings would be a button to where you are.
         let main = build(&connected(), View::Main, SliderParam::Sidetone, None);
         assert!(main.hits.iter().any(|(_, t)| *t == HitTarget::Gear));
-        for view in [View::Settings, View::Output] {
+        for view in [View::Settings, View::Output(Slot::Fallback)] {
             let p = build(&connected(), view, SliderParam::Sidetone, None);
             assert!(
                 !p.hits.iter().any(|(_, t)| *t == HitTarget::Gear),

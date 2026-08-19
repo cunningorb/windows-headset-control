@@ -87,6 +87,24 @@ this uses the same undocumented interface every audio switcher uses. If it ever 
 working, nothing moves and you're left where you were.
 [`docs/undocumented-apis.md`](docs/undocumented-apis.md) is the full record.
 
+**When it doesn't move your sound, it says so.** You get a notification the first time,
+and the reason stays on the **Switch output when off** row in settings until it works
+again. For the full picture — which device is chosen, which one you're owed a move back to,
+and what would happen right now — run:
+
+```powershell
+headset-tray.exe --explain-output
+```
+
+It only reads; it won't move anything.
+
+**Split game and chat** is a separate switch, off by default. The headset shows up in
+Windows as two playback devices — a game channel and a chat channel — and Windows keeps a
+separate default for calls, so the two are there to be used for different things. Turn it
+on, pick a **Game channel** and a **Chat channel**, and whenever the headset powers on your
+ordinary sound goes to the first and your calls to the second. Leave it off and the tray
+won't touch which device your calls use.
+
 The panel **follows your Windows light or dark setting** by default. **Appearance** in
 settings overrides that — auto, dark, or light. If you use Windows high contrast, it wins
 over all three.

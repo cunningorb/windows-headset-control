@@ -33,8 +33,8 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_GUID, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
-    NIM_SETVERSION, NIN_SELECT, NOTIFYICONDATAW, NOTIFYICON_VERSION_4,
+    Shell_NotifyIconW, NIF_GUID, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_WARNING, NIM_ADD,
+    NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NIN_SELECT, NOTIFYICONDATAW, NOTIFYICON_VERSION_4,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
@@ -142,6 +142,11 @@ struct Ctx {
     /// the first read lands, which is why a fresh start does not count as a
     /// transition and does not move anybody's sound.
     link: Option<bool>,
+    /// How many times the endpoint owed a move back has been looked for since
+    /// the last link change. Held in memory, unlike the record itself: the
+    /// debt has to survive a restart, but a count of how long we have been
+    /// waiting on this particular power-on does not.
+    restore_attempts: u8,
     /// Endpoint ids in the order the picker last drew them, so a click resolves
     /// against that paint rather than a re-enumeration that may have shifted.
     output_ids: Vec<String>,
@@ -363,6 +368,7 @@ pub fn run_ui_with<F: FnOnce(isize)>(
                 pending_noise: None,
                 panel_visible: false,
                 link: None,
+                restore_attempts: 0,
                 output_ids: Vec::new(),
             })
         });
@@ -378,13 +384,9 @@ pub fn run_ui_with<F: FnOnce(isize)>(
     }
 }
 
-/// Copies text into the fixed 128-wchar tooltip buffer, truncating rather than
-/// overflowing. Windows silently drops an unterminated tip, so the last slot is
-/// always left as the NUL.
+/// Copies text into the fixed 128-wchar tooltip buffer.
 fn write_tip(nid: &mut NOTIFYICONDATAW, text: &str) {
-    let wide: Vec<u16> = text.encode_utf16().take(nid.szTip.len() - 1).collect();
-    nid.szTip = [0; 128];
-    nid.szTip[..wide.len()].copy_from_slice(&wide);
+    write_fixed(&mut nid.szTip, text);
 }
 
 /// Resolves the palette from the user's choice, Windows' preference, and high
@@ -651,6 +653,9 @@ fn note_link_change(hwnd: HWND, ctx: &mut Ctx) {
         return;
     }
     ctx.link = now;
+    // Each transition gets its own budget of looks for the endpoint owed. A
+    // previous power-on that gave up must not leave the next one with none.
+    ctx.restore_attempts = 0;
     // A vanished dongle reads as `None`, not as a powered-down headset, and is
     // deliberately not acted on: its endpoints go with it and Windows moves the
     // sound by itself.
@@ -661,68 +666,184 @@ fn note_link_change(hwnd: HWND, ctx: &mut Ctx) {
 
 /// Moves the sound, or moves it back, according to where the link settled.
 ///
-/// Everything here is best-effort by design. Setting the default output uses an
-/// interface Windows does not document (see `win32::audio`), so a failure is a
-/// thing that can simply happen — and when it does, the user is left exactly
-/// where they were rather than half-moved.
+/// The rule itself is in `crate::output`, which is handed facts and answers
+/// with an action; this function gathers those facts and carries the action
+/// out. Everything here is best-effort by design: setting the default output
+/// uses an interface Windows does not document (see `win32::audio`), so a
+/// failure is a thing that can simply happen — and when it does, the user is
+/// left exactly where they were rather than half-moved, and told.
 fn reconcile_output(ctx: &mut Ctx) {
-    if !crate::settings::switch_output_when_off() {
-        return;
-    }
-    match ctx.link {
-        Some(false) => switch_output_away(),
-        Some(true) => switch_output_back(),
-        None => {}
+    use crate::output::{Action, Problem};
+
+    match plan_output(ctx.link, ctx.restore_attempts) {
+        // Deliberately not a retraction. "Nothing to do" is the answer for a
+        // powered-on headset with nothing owed, which is the state the machine
+        // is in moments after a power-off that could not find a device to move
+        // to — clearing here would wipe that complaint off the settings row and
+        // then raise it as news all over again on the next power-off. A
+        // complaint is retracted by a switch that works, or by the user
+        // changing the setting it is about.
+        Action::Nothing => {}
+        Action::MoveAway { to, owing } => {
+            if audio::set_default_output(&to) {
+                // Recorded only after the move actually took. A debt for a move
+                // that never happened would drag the sound somewhere it never
+                // left.
+                let _ = crate::settings::set_restore_output(Some(&owing));
+                tracing::info!("headset powered down; sound moved to {to}");
+                report_output_issue(ctx, None);
+            } else {
+                report_output_issue(ctx, Some(Problem::SwitchFailed));
+            }
+        }
+        Action::MoveBack { to } => {
+            if audio::set_default_output(&to) {
+                let _ = crate::settings::set_restore_output(None);
+                tracing::info!("headset back; sound restored");
+                report_output_issue(ctx, None);
+            } else {
+                report_output_issue(ctx, Some(Problem::SwitchFailed));
+            }
+        }
+        Action::Split { game, chat } => {
+            if audio::set_split_output(&game, &chat) {
+                // Whatever was owed is settled: the sound has been put on the
+                // headset deliberately, and leaving the record standing would
+                // drag it back off at the next opportunity.
+                let _ = crate::settings::set_restore_output(None);
+                tracing::info!("headset back; game on {game}, calls on {chat}");
+                report_output_issue(ctx, None);
+            } else {
+                report_output_issue(ctx, Some(Problem::SwitchFailed));
+            }
+        }
+        Action::Retry => {
+            // The endpoint may be moments from appearing — a wireless link
+            // comes up before its audio endpoints do. Look again rather than
+            // concluding anything.
+            ctx.restore_attempts = ctx.restore_attempts.saturating_add(1);
+            tracing::debug!(
+                "the endpoint to restore is not present yet (look {})",
+                ctx.restore_attempts
+            );
+            let _ =
+                unsafe { SetTimer(ctx.nid.hWnd, ID_OUTPUT_TIMER, crate::output::RETRY_MS, None) };
+        }
+        Action::GiveUp => {
+            // The endpoint is gone for good — a reinstalled driver or a
+            // re-enumerated dongle is enough to retire an endpoint id. Letting
+            // the record go is what stops it blocking every later switch.
+            let _ = crate::settings::set_restore_output(None);
+            tracing::warn!("gave up restoring the previous output; the endpoint is gone");
+            report_output_issue(ctx, Some(Problem::RestoreGone));
+        }
+        Action::Blocked(p) => report_output_issue(ctx, Some(p)),
     }
 }
 
-fn switch_output_away() {
-    // Already away. Without this, a second drop would record the fallback
-    // itself as the endpoint we owe the user a return to, and the way back
-    // would be lost.
-    if crate::settings::restore_output().is_some() {
-        return;
-    }
-    let Some((fallback_id, fallback_name)) = crate::settings::fallback_output() else {
-        tracing::debug!("no output chosen to switch to");
-        return;
-    };
-    let Some(current) = audio::default_output_id() else {
-        return;
-    };
-    if current == fallback_id {
-        // The sound is already there, so there is nothing to move and — more
-        // importantly — nothing to owe. Recording a debt here would move the
-        // user somewhere they never were when the headset came back.
-        return;
-    }
-    if !audio::is_present(&fallback_id) {
-        tracing::info!("{fallback_name} is not connected; leaving the sound where it is");
-        return;
-    }
-    if audio::set_default_output(&fallback_id) {
-        // Recorded only after the move actually took. A debt for a move that
-        // never happened would drag the sound somewhere it never left.
-        let _ = crate::settings::set_restore_output(Some(&current));
-        tracing::info!("headset powered down; sound moved to {fallback_name}");
+/// Gathers what the machine currently says and asks `output::decide` about it.
+///
+/// Reads only — every write is `reconcile_output`'s. Separating the two is what
+/// lets the decision be inspected on a real machine (`--explain-output`)
+/// without moving anybody's sound to find out what it would have done.
+pub fn plan_output(link: Option<bool>, attempts: u8) -> crate::output::Action {
+    use crate::output::{decide, Facts, Slot};
+
+    let fallback = crate::settings::output_choice(Slot::Fallback);
+    let game = crate::settings::output_choice(Slot::Game);
+    let chat = crate::settings::output_choice(Slot::Chat);
+    let fallback_id = fallback.as_ref().map(|(id, _)| id.as_str());
+    let game_id = game.as_ref().map(|(id, _)| id.as_str());
+    let chat_id = chat.as_ref().map(|(id, _)| id.as_str());
+    let debt = crate::settings::restore_output();
+    let current = audio::default_output_id();
+
+    // Enumerated once and asked repeatedly: `audio::is_present` is a full Core
+    // Audio enumeration each time, and every question is about one snapshot.
+    let present = audio::render_outputs();
+    let has = |id: Option<&str>| id.is_some_and(|i| present.iter().any(|d| d.id == i));
+
+    decide(&Facts {
+        enabled: crate::settings::switch_output_when_off(),
+        split: crate::settings::split_game_and_chat(),
+        link,
+        fallback: fallback_id,
+        fallback_present: has(fallback_id),
+        game: game_id,
+        game_present: has(game_id),
+        chat: chat_id,
+        chat_present: has(chat_id),
+        current: current.as_deref(),
+        debt: debt.as_deref(),
+        debt_present: has(debt.as_deref()),
+        attempts,
+    })
+}
+
+/// Whether the user is visibly halfway through setting the split up.
+///
+/// The settings handlers act on the current state the moment something changes,
+/// so that a switch turned on with the headset already powered does something
+/// rather than appearing broken. That is the wrong thing to do between the two
+/// halves of one choice: picking the game channel and immediately being told
+/// off for not having picked the chat channel is a complaint about the step the
+/// user is in the middle of taking. Only the powered-on case is held back —
+/// that is the only one the split has any say over.
+fn mid_split_setup(link: Option<bool>) -> bool {
+    use crate::output::Slot;
+
+    link == Some(true)
+        && crate::settings::split_game_and_chat()
+        && (crate::settings::output_choice(Slot::Game).is_none()
+            || crate::settings::output_choice(Slot::Chat).is_none())
+}
+
+/// Records a problem (or its absence) and tells the user the first time.
+///
+/// Persisting it is what lets the settings panel explain itself hours later,
+/// when nobody was watching the balloon. `set_output_problem` reports whether the
+/// stored value actually changed, so a condition that recurs on every power-off
+/// interrupts once rather than every time.
+fn report_output_issue(ctx: &Ctx, problem: Option<crate::output::Problem>) {
+    let changed = crate::settings::set_output_problem(problem);
+    if let Some(p) = problem {
+        tracing::warn!("output switch: {}", p.detail());
+        if changed {
+            notify_balloon(ctx, "Headset audio switching", p.detail());
+        }
     }
 }
 
-fn switch_output_back() {
-    let Some(previous) = crate::settings::restore_output() else {
-        return;
-    };
-    if !audio::is_present(&previous) {
-        // Keep owing it rather than discarding the debt: the endpoint may be
-        // moments from reappearing, and forgetting here would strand the user
-        // on the fallback with nothing left to say where they came from.
-        tracing::info!("the endpoint to restore is not present yet; keeping the record");
-        return;
+/// Shows a balloon from the tray icon.
+///
+/// The panel is the wrong place for news: it is only on screen when the user
+/// opened it, and the whole failure being reported is one they notice by
+/// *not* seeing anything happen. Windows may suppress this — focus assist,
+/// or notifications turned off for the app — which is why the same text is
+/// also persisted for the settings row.
+fn notify_balloon(ctx: &Ctx, title: &str, body: &str) {
+    // A copy carrying only NIF_INFO: the identity fields (hWnd/uID, or the
+    // GUID when the icon was added with one) come along in the copy, and
+    // re-sending NIF_ICON | NIF_TIP here would rewrite them for no reason.
+    let mut nid = ctx.nid;
+    nid.uFlags = (ctx.nid.uFlags & NIF_GUID) | NIF_INFO;
+    write_fixed(&mut nid.szInfoTitle, title);
+    write_fixed(&mut nid.szInfo, body);
+    nid.dwInfoFlags = NIIF_WARNING;
+    unsafe {
+        let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
     }
-    if audio::set_default_output(&previous) {
-        let _ = crate::settings::set_restore_output(None);
-        tracing::info!("headset back; sound restored");
-    }
+}
+
+/// Copies text into one of the notification struct's fixed wide buffers,
+/// truncating rather than overflowing and always leaving the final NUL.
+///
+/// Windows silently drops an unterminated string, so a body that exactly
+/// filled the buffer would produce no balloon at all rather than a clipped one.
+fn write_fixed(buf: &mut [u16], text: &str) {
+    let wide: Vec<u16> = text.encode_utf16().take(buf.len() - 1).collect();
+    buf.fill(0);
+    buf[..wide.len()].copy_from_slice(&wide);
 }
 
 /// Renders the current state and pushes it into the layered window.
@@ -827,7 +948,7 @@ fn on_panel_press(ctx: &mut Ctx, x: f32, y: f32) {
             // One step back, not all the way out: the picker is reached from
             // Settings, so leaving it should land where it was opened from.
             ctx.view = match ctx.view {
-                View::Output => View::Settings,
+                View::Output(_) => View::Settings,
                 _ => View::Main,
             };
             redraw_panel(ctx);
@@ -900,23 +1021,52 @@ fn on_panel_press(ctx: &mut Ctx, x: f32, y: f32) {
                     // Turning it off cancels any move still owed. The sound is
                     // left where it is — the user may well be listening to it —
                     // but a switched-off feature must not act on a later
-                    // power-on.
+                    // power-on. The complaint goes with it: a feature that is
+                    // off has nothing to report.
                     let _ = crate::settings::set_restore_output(None);
+                    let _ = crate::settings::set_output_problem(None);
                 } else {
                     // Turning it on acts on the state the headset is in now.
                     // Waiting for the next transition would mean switching it
                     // on with the headset already off and watching nothing
                     // happen, which reads as a setting that does not work.
+                    //
+                    // The old complaint goes first: it was about a setting the
+                    // user has just changed, so it has to be re-earned rather
+                    // than left standing over a fresh attempt.
+                    let _ = crate::settings::set_output_problem(None);
                     reconcile_output(ctx);
                 }
                 redraw_panel(ctx);
             }
         }
-        HitTarget::OpenOutputPicker => {
-            ctx.view = View::Output;
+        HitTarget::ToggleSplit => {
+            let now = crate::settings::split_game_and_chat();
+            if crate::settings::set_split_game_and_chat(!now) {
+                // The complaint goes either way: turning the split off retires
+                // a message about a feature that is no longer running, and
+                // turning it on means any standing one was about the settings
+                // as they were, so it has to be re-earned.
+                let _ = crate::settings::set_output_problem(None);
+                if !now && !mid_split_setup(ctx.link) {
+                    // Turning it on acts on the state the headset is in now,
+                    // for the same reason the switch above it does: waiting for
+                    // the next power cycle reads as a setting that does nothing.
+                    reconcile_output(ctx);
+                }
+                redraw_panel(ctx);
+            }
+        }
+        HitTarget::OpenOutputPicker(slot) => {
+            ctx.view = View::Output(slot);
             redraw_panel(ctx);
         }
         HitTarget::OutputChoice(i) => {
+            // Which of the three choices is being made is carried by the view,
+            // because the picker draws the same list for all three.
+            let View::Output(slot) = ctx.view else {
+                return;
+            };
             // Resolved against the list this paint drew, then re-read from the
             // system for its current name: the id is the durable half, and the
             // stored name is only ever a label for it.
@@ -926,11 +1076,16 @@ fn on_panel_press(ctx: &mut Ctx, x: f32, y: f32) {
                     .find(|d| d.id == id)
                     .map(|d| d.name)
                     .unwrap_or_else(|| id.clone());
-                let _ = crate::settings::set_fallback_output(&id, &name);
+                let _ = crate::settings::set_output_choice(slot, &id, &name);
                 // Same reasoning as turning the switch on: choosing the device
                 // is the step that made the setting actionable, so act on where
-                // the headset is now rather than waiting for it to move.
-                reconcile_output(ctx);
+                // the headset is now rather than waiting for it to move. Any
+                // standing complaint was about the device that was chosen
+                // before, so it is dropped and has to be re-earned.
+                let _ = crate::settings::set_output_problem(None);
+                if !mid_split_setup(ctx.link) {
+                    reconcile_output(ctx);
+                }
                 ctx.view = View::Settings;
                 redraw_panel(ctx);
             }
