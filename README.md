@@ -68,6 +68,43 @@ with what you asked for, you see the truth.
 Right-click the icon for Refresh and Exit. The gear opens settings: start with Windows, and
 whether to warn you when Synapse is running (it can fight this app for the same settings).
 
+**Switch output when off** moves Windows' sound to another device when the
+headset goes quiet, and puts it back when the headset returns. Turn it on in settings and
+pick the device under **Play through** — your speakers, usually. It's off until you do
+both.
+
+Holding the power button is what turns the headset off, and that's what this reacts to.
+The headset reports that its link dropped, not *why*, so an auto-sleep or walking out of
+range looks the same and will also move your sound. Brief dropouts won't: nothing moves
+until the link has held its new state for a couple of seconds.
+
+It puts you back exactly where you were, not on a guess — the dongle presents two
+playback devices (Game and Chat) and only you know which one you were using. If the tray
+is closed or restarted while your headset is off, it still remembers what it owes you.
+
+Windows offers no supported way for a program to change the default playback device, so
+this uses the same undocumented interface every audio switcher uses. If it ever stops
+working, nothing moves and you're left where you were.
+[`docs/undocumented-apis.md`](docs/undocumented-apis.md) is the full record.
+
+**When it doesn't move your sound, it says so.** You get a notification the first time,
+and the reason stays on the **Switch output when off** row in settings until it works
+again. For the full picture — which device is chosen, which one you're owed a move back to,
+and what would happen right now — run:
+
+```powershell
+headset-tray.exe --explain-output
+```
+
+It only reads; it won't move anything.
+
+**Split game and chat** is a separate switch, off by default. The headset shows up in
+Windows as two playback devices — a game channel and a chat channel — and Windows keeps a
+separate default for calls, so the two are there to be used for different things. Turn it
+on, pick a **Game channel** and a **Chat channel**, and whenever the headset powers on your
+ordinary sound goes to the first and your calls to the second. Leave it off and the tray
+won't touch which device your calls use.
+
 The panel **follows your Windows light or dark setting** by default. **Appearance** in
 settings overrides that — auto, dark, or light. If you use Windows high contrast, it wins
 over all three.

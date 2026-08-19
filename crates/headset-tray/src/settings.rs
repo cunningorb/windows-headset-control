@@ -23,6 +23,8 @@ use windows::Win32::System::Registry::{
     RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
 };
 
+use crate::output::{Problem, Slot};
+
 /// Where Windows looks for per-user startup programs.
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 /// The value name under `RUN_KEY`. Also the app's identity in Task Manager.
@@ -31,6 +33,10 @@ pub const APP_NAME: &str = "HeadsetTray";
 const APP_KEY: &str = r"Software\HeadsetTray";
 const SYNAPSE_WARNING_VALUE: &str = "ShowSynapseWarning";
 const APPEARANCE_VALUE: &str = "Appearance";
+const OUTPUT_SWITCH_VALUE: &str = "SwitchOutputWhenOff";
+const SPLIT_VALUE: &str = "SplitGameAndChat";
+const RESTORE_OUTPUT_VALUE: &str = "RestoreOutputId";
+const OUTPUT_ISSUE_VALUE: &str = "LastOutputIssue";
 
 /// Where Windows keeps the user's light-or-dark preference for applications.
 const PERSONALIZE_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
@@ -236,6 +242,121 @@ pub fn set_show_synapse_warning(enabled: bool) -> bool {
     set_dword(APP_KEY, SYNAPSE_WARNING_VALUE, u32::from(enabled))
 }
 
+/// Whether to move Windows' sound elsewhere while the headset is powered down.
+///
+/// Defaults to **off**, unlike the Synapse warning. Changing which device the
+/// whole machine plays through is not something to start doing to somebody who
+/// never asked for it.
+pub fn switch_output_when_off() -> bool {
+    read_dword(HKEY_CURRENT_USER, APP_KEY, OUTPUT_SWITCH_VALUE) == Some(1)
+}
+
+pub fn set_switch_output_when_off(enabled: bool) -> bool {
+    set_dword(APP_KEY, OUTPUT_SWITCH_VALUE, u32::from(enabled))
+}
+
+/// Whether to point the headset's two channels at different Windows roles when
+/// it comes back on: the game channel at ordinary playback, the chat channel at
+/// calls.
+///
+/// Defaults to **off**, for the same reason the switch above it does. Moving
+/// somebody's calls to a different endpoint than their music is a choice, not a
+/// correction, and plenty of people use one channel for everything.
+pub fn split_game_and_chat() -> bool {
+    read_dword(HKEY_CURRENT_USER, APP_KEY, SPLIT_VALUE) == Some(1)
+}
+
+pub fn set_split_game_and_chat(enabled: bool) -> bool {
+    set_dword(APP_KEY, SPLIT_VALUE, u32::from(enabled))
+}
+
+/// The registry value names holding one slot's `(endpoint id, name)`.
+///
+/// The fallback's two keep their original names so an existing installation
+/// does not silently lose the device it was already switching to.
+fn slot_values(slot: Slot) -> (&'static str, &'static str) {
+    match slot {
+        Slot::Fallback => ("FallbackOutputId", "FallbackOutputName"),
+        Slot::Game => ("GameOutputId", "GameOutputName"),
+        Slot::Chat => ("ChatOutputId", "ChatOutputName"),
+    }
+}
+
+/// A chosen device, as `(endpoint id, name at the time it was chosen)`.
+///
+/// Both are stored because they answer different questions. The id is what the
+/// switch acts on and is stable across reboots and renames; the name is only so
+/// the settings panel can say what was chosen without enumerating devices, and
+/// can still name it when that device is currently absent.
+pub fn output_choice(slot: Slot) -> Option<(String, String)> {
+    let (id_value, name_value) = slot_values(slot);
+    let id = read_string(HKEY_CURRENT_USER, APP_KEY, id_value)?;
+    if id.is_empty() {
+        return None;
+    }
+    let name = read_string(HKEY_CURRENT_USER, APP_KEY, name_value).unwrap_or_else(|| id.clone());
+    Some((id, name))
+}
+
+pub fn set_output_choice(slot: Slot, id: &str, name: &str) -> bool {
+    let (id_value, name_value) = slot_values(slot);
+    set_string(APP_KEY, id_value, id) && set_string(APP_KEY, name_value, name)
+}
+
+/// The endpoint to put back when the headset returns, or `None` when nothing
+/// has been switched away from.
+///
+/// Persisted rather than held in memory because presence *is* the state: this
+/// value existing means "we moved the sound and owe the user a move back". A
+/// tray that is closed, updated, or killed while the headset is off would
+/// otherwise forget its debt and strand the sound on the speakers.
+pub fn restore_output() -> Option<String> {
+    read_string(HKEY_CURRENT_USER, APP_KEY, RESTORE_OUTPUT_VALUE).filter(|s| !s.is_empty())
+}
+
+/// Records what to restore, or clears the record once it has been restored.
+pub fn set_restore_output(id: Option<&str>) -> bool {
+    match id {
+        Some(id) => set_string(APP_KEY, RESTORE_OUTPUT_VALUE, id),
+        // Absent is the "nothing owed" state, so a missing value is success.
+        None => delete_value(APP_KEY, RESTORE_OUTPUT_VALUE) || restore_output().is_none(),
+    }
+}
+
+/// The last thing that stopped the output switch or the split working, if
+/// anything.
+///
+/// Persisted for the same reason the restore record is: the tray is not
+/// running when the user reads it. Somebody who powers their headset off,
+/// hears nothing move, and opens the panel an hour later needs the reason to
+/// still be there. Cleared the moment a switch succeeds, so a stale message
+/// cannot outlive the condition it describes.
+///
+/// Stored as [`Problem::key`] rather than as the sentence shown to the user, so
+/// the panel can tell which of the two settings rows the complaint belongs on
+/// — and so re-wording a message does not move it. Anything unrecognised, which
+/// is what an older build's record looks like, reads as no complaint.
+pub fn output_problem() -> Option<Problem> {
+    let key = read_string(HKEY_CURRENT_USER, APP_KEY, OUTPUT_ISSUE_VALUE)?;
+    Problem::from_key(&key)
+}
+
+/// Records a problem, or clears the record once things work again.
+///
+/// Returns whether this changed what was stored. Callers use that to decide
+/// whether to interrupt the user with a balloon: the same problem recurring on
+/// every power-off is one notification, not one per cycle.
+pub fn set_output_problem(problem: Option<Problem>) -> bool {
+    if output_problem() == problem {
+        return false;
+    }
+    match problem {
+        Some(p) => set_string(APP_KEY, OUTPUT_ISSUE_VALUE, p.key()),
+        // Absent is the "nothing wrong" state, so a missing value is success.
+        None => delete_value(APP_KEY, OUTPUT_ISSUE_VALUE) || output_problem().is_none(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,6 +398,75 @@ mod tests {
         assert_eq!(read_dword(HKEY_CURRENT_USER, SCRATCH, "Flag"), Some(0));
         assert!(delete_value(SCRATCH, "Flag"));
         assert_eq!(read_dword(HKEY_CURRENT_USER, SCRATCH, "Flag"), None);
+    }
+
+    /// Round-trips the real setting, restoring whatever the machine had. The
+    /// property under test is that *absence* is the "nothing owed" state, since
+    /// the whole restore mechanism is built on presence meaning a debt.
+    #[test]
+    fn clearing_the_restore_record_leaves_nothing_behind() {
+        let previous = restore_output();
+
+        assert!(set_restore_output(Some("{0.0.0.00000000}.{test}")));
+        assert_eq!(restore_output().as_deref(), Some("{0.0.0.00000000}.{test}"));
+        assert!(set_restore_output(None));
+        assert_eq!(restore_output(), None, "a cleared debt must not linger");
+        // An empty string is a value, but not a debt: reading it back as one
+        // would make the tray try to restore an endpoint that cannot exist.
+        assert!(set_string(APP_KEY, RESTORE_OUTPUT_VALUE, ""));
+        assert_eq!(restore_output(), None);
+        assert!(set_restore_output(None));
+
+        if let Some(p) = previous {
+            assert!(set_restore_output(Some(&p)));
+        }
+    }
+
+    /// The issue record answers two questions with one value: what went wrong,
+    /// and whether it is *news*. The second is what keeps a problem that
+    /// recurs on every power-off from producing a balloon on every power-off.
+    #[test]
+    fn recording_the_same_issue_twice_is_not_news() {
+        let previous = output_problem();
+
+        assert!(
+            set_output_problem(Some(Problem::SwitchFailed)),
+            "a new problem is news"
+        );
+        assert_eq!(output_problem(), Some(Problem::SwitchFailed));
+        assert!(
+            !set_output_problem(Some(Problem::SwitchFailed)),
+            "the same problem again is not"
+        );
+        assert!(
+            set_output_problem(Some(Problem::ChannelsAbsent)),
+            "a different one is"
+        );
+        assert!(set_output_problem(None), "clearing a problem is news");
+        assert_eq!(output_problem(), None);
+        assert!(
+            !set_output_problem(None),
+            "clearing nothing must not announce anything"
+        );
+
+        let _ = set_output_problem(previous);
+    }
+
+    /// The value used to hold the sentence shown to the user. An installation
+    /// upgrading across that change must not read the old text back as a
+    /// problem it cannot place on any row.
+    #[test]
+    fn a_record_written_by_an_older_build_reads_as_nothing() {
+        let previous = output_problem();
+
+        assert!(set_string(
+            APP_KEY,
+            OUTPUT_ISSUE_VALUE,
+            "Windows refused the change."
+        ));
+        assert_eq!(output_problem(), None);
+
+        let _ = set_output_problem(previous);
     }
 
     #[test]

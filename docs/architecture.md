@@ -102,12 +102,15 @@ flagged with `supported_device: false` plus a stderr warning when it does.
 `headset-protocol` declares `#![forbid(unsafe_code)]`: it has zero operating-system
 access and needs none.
 
-`unsafe` is confined to exactly **two** modules in the workspace:
+`unsafe` is confined to the workspace's two Win32 areas:
 
 - `crates/headset-device/src/windows/ffi.rs` — raw SetupAPI and `hid.dll`, including
   `HidD_SetOutputReport` for the write path.
-- `crates/headset-tray/src/win32/mod.rs` — the notification icon, popup menus, message
-  loop, process check, and Core Audio.
+- `crates/headset-tray/src/win32/` — the notification icon, popup menus, message loop,
+  process check, and Core Audio. Within it, `audio.rs` is the only place in the workspace
+  that calls an interface Windows does not document; it is set apart precisely so that
+  exception is one file rather than a line buried in the message loop. See
+  [`undocumented-apis.md`](undocumented-apis.md).
 
 The second one is a deliberate Phase 2 trade. Phase 1 stated that `headset-tray` would be
 entirely safe Rust, which assumed it would take a tray-icon crate. Phase 2's footprint
@@ -116,6 +119,60 @@ another heavyweight application defeats the purpose — so the tray calls `Shell
 and Core Audio directly instead. A second confined `unsafe` module was judged the better
 side of that trade. Every other module in every crate is safe Rust, and `headset-cli`
 contains none at all.
+
+## Switching the output device
+
+The tray can move Windows' sound to another device while the headset is powered down, and
+back when it returns. Two things are worth knowing about how it is built:
+
+- **The trigger is the link parameter, not a button.** No power-button event exists in the
+  observed protocol, and none is invented. Holding the power button powers the headset
+  off, and *that* is what parameter `0x20` reports. The link carries no reason, so an
+  auto-sleep and a walk out of range look identical to a deliberate power-off — which is
+  why the switch is debounced rather than immediate.
+- **The way back is a persisted debt, not a remembered device.** When the sound is moved,
+  the endpoint it was moved *from* is written to the registry. Its presence is the state:
+  it means "we owe this user a move back". Holding it in memory would strand somebody on
+  the speakers if the tray were closed, updated, or killed while the headset was off.
+- **A debt that cannot be paid is not a reason to refuse new work.** Endpoint ids are
+  durable but not permanent: a reinstalled driver or a re-enumerated dongle retires one and
+  issues another. Alpha 2 read the debt's mere *presence* as "already switched", so a debt
+  naming a retired endpoint could never be discharged (the endpoint was gone) and never be
+  replaced (its presence blocked the switch) — the feature died silently and stayed dead
+  until somebody edited the registry. A debt now counts only while the machine still has
+  the endpoint it names, and one whose endpoint never reappears is given up on after
+  `output::RESTORE_ATTEMPTS` looks.
+
+The decision itself lives in `headset-tray/src/output.rs` and touches nothing: it is handed
+facts and answers with an `Action`. That split exists because the alternative is a rule
+whose only test is powering a headset off and watching a machine's sound move.
+`win32::plan_output` gathers the facts, `win32::reconcile_output` carries the action out,
+and `headset-tray.exe --explain-output` prints what would happen for either link state
+without doing it.
+
+Failures are surfaced rather than logged into a subscriber nobody enabled: a balloon from
+the tray icon the first time a problem appears, and the same problem persisted — by name,
+not by its wording — so the settings row can still explain itself hours later, on the row
+of the feature that earned it.
+
+The same module carries a second, independent rule: **the game/chat split**. Windows keeps
+three defaults (console, multimedia, communications) and the headset presents two endpoints,
+which is the whole reason a chat channel exists. Restoring the sound can only name the one
+endpoint it was moved from, and writing that into all three roles is actively destructive —
+it overwrites a communications default the user had pointed at the chat channel. So when
+`Slot::Game` and `Slot::Chat` have both been chosen and the split is on, a headset coming
+back produces `Action::Split` instead of `Action::MoveBack`: ordinary playback to the game
+channel, calls to the chat channel, and the debt discharged, since the sound has been placed
+deliberately. It is opt-in and works with the move-when-off switch turned off, because
+wanting calls on their own channel and wanting your sound moved when the headset dies are
+different wishes.
+
+Both rules share one retry budget, for the same reason: a wireless link comes up seconds
+before its audio endpoints do, so "the endpoint I want is not there" is the ordinary first
+answer, not a failure.
+
+Nothing here reaches the headset. Setting the default output has no documented API at all;
+see [`undocumented-apis.md`](undocumented-apis.md).
 
 Microphone mute lives in the tray's Win32 module rather than in `headset-device` because
 it is a USB Audio Class control, not a vendor HID command. The vendor protocol can only

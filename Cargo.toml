@@ -8,7 +8,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 edition = "2021"
 # Matches the toolchain pinned in rust-toolchain.toml, which is what CI builds
 # and tests with. Not an independently verified floor: no job builds against an
@@ -73,6 +73,14 @@ windows = { version = "0.58", features = [
     "Win32_System_Registry",
     "Win32_Media_Audio",
     "Win32_Media_Audio_Endpoints",
+    # Listing playback devices and naming them, for the switch that moves the
+    # sound off a powered-down headset. Features of the pinned 0.58, not
+    # crates: `IMMDevice::OpenPropertyStore` needs the property-system feature
+    # and the friendly-name key lives under function discovery. Setting the
+    # default output has no binding here and no documentation anywhere -- see
+    # `crates/headset-tray/src/win32/audio.rs`.
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_UI_Shell_PropertiesSystem",
     # DPI awareness. A feature of the pinned 0.58, not a crate. The manifest
     # route is unavailable on x86_64-pc-windows-gnu, which has no
     # /MANIFEST:EMBED, so the process opts in at runtime through

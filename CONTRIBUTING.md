@@ -29,10 +29,26 @@ target, and this is not incidental:
   If you need to update a dependency, check that the whole tree stays off `raw-dylib`
   before proposing it.
 
+Two things follow from that target and neither is obvious from a failed build:
+
+- **You need MinGW-w64 on `PATH`.** The GNU target links with `gcc`, and rustup does not
+  supply one. `winget install BrechtSanders.WinLibs.POSIX.MSVCRT` is enough; take the
+  MSVCRT runtime variant, which is the C runtime this target links against. Without it the
+  build stops at `linker 'gcc' not found`.
+- **Make GNU your default host, not just an installed target.** `rustup target add` alone
+  is not sufficient: build scripts and proc macros compile for the *host* triple, so a
+  stock MSVC-host rustup fails with `linker 'link.exe' not found` before it reaches any of
+  this project's code — and installing Visual Studio to satisfy that is the wrong fix.
+
 ```powershell
+rustup set default-host x86_64-pc-windows-gnu
 cargo build --workspace
 cargo test --workspace
 ```
+
+CI gets away without the first step because GitHub's Windows runners ship MinGW-w64
+already, and without the second because it passes `--target x86_64-pc-windows-gnu`
+explicitly while running on a host that has both linkers.
 
 Most tests need no hardware: the device layer has a fixture-driven fake backend, and the
 panel layout, protocol codec, and placement geometry are pure and fully unit-tested. The

@@ -6,6 +6,7 @@
 
 use headset_protocol::{NoiseControl, NoiseMode, ANC_LEVEL_RANGE};
 
+use crate::output::{Problem, Slot};
 use crate::state::HeadsetState;
 use crate::ui::theme::*;
 
@@ -110,6 +111,18 @@ pub enum HitTarget {
     Refresh,
     ToggleStartup,
     ToggleWarning,
+    /// Turns the power-off output switch on or off.
+    ToggleOutputSwitch,
+    /// Turns the game/chat split on or off.
+    ToggleSplit,
+    /// Opens the device picker, for one of the three choices.
+    OpenOutputPicker(Slot),
+    /// One device in the picker, by its position in the drawn list. Positional
+    /// rather than carrying the id because [`HitTarget`] is `Copy` and a `String`
+    /// is not; [`Panel::output_ids`] resolves it against the list that was
+    /// actually drawn, so a device appearing or vanishing between the paint and
+    /// the click cannot silently select a different one.
+    OutputChoice(usize),
     /// The three segments of the noise-mode row, in drawn order.
     NoiseOff,
     NoiseAnc,
@@ -126,6 +139,10 @@ pub enum HitTarget {
 pub enum View {
     Main,
     Settings,
+    /// The output-device picker, reached from Settings. Carries which of the
+    /// three choices is being made, because the list it draws is the same one
+    /// either way and only the heading and the tick differ.
+    Output(Slot),
 }
 
 /// Which parameter the single slider is currently driving.
@@ -156,7 +173,9 @@ impl SliderParam {
     pub fn end_labels(self) -> [&'static str; 3] {
         match self {
             SliderParam::Sidetone => ["OFF", "", "MAX"],
-            SliderParam::GameChat => ["CHAT", "BALANCED", "GAME"],
+            // Low values are game, high values are chat: verified by listening,
+            // not by the captures, which never established the direction.
+            SliderParam::GameChat => ["GAME", "BALANCED", "CHAT"],
         }
     }
     pub fn other(self) -> SliderParam {
@@ -201,8 +220,8 @@ pub fn format_value(param: SliderParam, value: Option<u8>) -> String {
         }
         SliderParam::GameChat => match v.cmp(&10) {
             std::cmp::Ordering::Equal => "Balanced".to_string(),
-            std::cmp::Ordering::Greater => format!("Game +{}", v - 10),
-            std::cmp::Ordering::Less => format!("Chat +{}", 10 - v),
+            std::cmp::Ordering::Greater => format!("Chat +{}", v - 10),
+            std::cmp::Ordering::Less => format!("Game +{}", 10 - v),
         },
     }
 }
@@ -238,6 +257,10 @@ pub struct Panel {
     pub track: Option<TrackGeometry>,
     /// ANC level track, present only while the mode is ANC.
     pub level_track: Option<LevelTrack>,
+    /// Endpoint ids in the order they were drawn, so a
+    /// [`HitTarget::OutputChoice`] resolves against this paint rather than a
+    /// fresh enumeration. Empty in every view but [`View::Output`].
+    pub output_ids: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -390,6 +413,7 @@ pub fn build(state: &HeadsetState, view: View, param: SliderParam, preview: Opti
 
     let mut track = None;
     let mut level_track = None;
+    let mut output_ids = Vec::new();
     match view {
         View::Main => main_body(
             &mut b,
@@ -401,6 +425,7 @@ pub fn build(state: &HeadsetState, view: View, param: SliderParam, preview: Opti
             &mut level_track,
         ),
         View::Settings => settings_body(&mut b, state, &mut y),
+        View::Output(slot) => output_body(&mut b, slot, &mut y, &mut output_ids),
     }
 
     // Footer
@@ -429,6 +454,7 @@ pub fn build(state: &HeadsetState, view: View, param: SliderParam, preview: Opti
         height,
         track,
         level_track,
+        output_ids,
     }
 }
 
@@ -471,7 +497,10 @@ fn header(b: &mut Builder, state: &HeadsetState, view: View, y: &mut f32) {
 
     // Gear / Back button, top right.
     let btn = Rect::new(MARGIN + CONTENT_W - 30.0, *y - 2.0, 30.0, 30.0);
-    let active = view == View::Settings;
+    // Every view but the main one is somewhere you came from somewhere else, so
+    // the header button is Back in all of them. `on_panel_press` decides where
+    // back actually goes.
+    let active = view != View::Main;
     b.p.push(Primitive::RoundRect {
         rect: btn,
         radius: BUTTON_RADIUS,
@@ -974,50 +1003,65 @@ fn settings_body(b: &mut Builder, _state: &HeadsetState, y: &mut f32) {
     );
     *y += 22.0;
 
-    let rows: [(&str, &str, HitTarget, bool); 2] = [
-        (
-            "Start on Windows startup",
-            "Launch the tray app when you sign in.",
-            HitTarget::ToggleStartup,
-            crate::settings_run_on_startup(),
-        ),
-        (
-            "Display Synapse warning",
-            "Warn when Synapse may override settings.",
-            HitTarget::ToggleWarning,
-            crate::settings_show_warning(),
-        ),
-    ];
+    // Problems are recorded one at a time, and each belongs to the feature that
+    // earned it. The switch and the split are separate settings that can be on
+    // independently, so a row is only ever shown its own complaint -- and only
+    // while it is on, because a message about something switched off is noise.
+    let switch_on = crate::settings_switch_output();
+    let split_on = crate::settings_split_game_and_chat();
+    let problem = crate::settings_output_problem();
+    let switch_problem = problem.filter(|p| !p.is_about_split() && switch_on);
+    let split_problem = problem.filter(|p| p.is_about_split() && split_on);
 
-    for (title, desc, target, on) in rows {
-        let card = Rect::new(MARGIN, *y, CONTENT_W, 66.0);
-        b.card(card, bg_card(), border_card());
-        b.text(
-            Rect::new(card.x + 16.0, card.y + 12.0, card.w - 76.0, 18.0),
-            title,
-            FS_BODY + 1.0,
-            W_SEMIBOLD,
-            text_primary(),
-            Align::Left,
-        );
-        // Sized to hold the longer description on one line. Text is vertically
-        // centred in its box, so a wrap does not push downward -- it grows both
-        // ways and collides with the title above.
-        b.text(
-            Rect::new(card.x + 16.0, card.y + 34.0, card.w - 62.0, 20.0),
-            desc,
-            FS_DESCRIPTION,
-            W_REGULAR,
-            text_secondary(),
-            Align::Left,
-        );
-        toggle(
-            b,
-            Rect::new(card.right() - 58.0, card.center_y() - 11.0, 42.0, 22.0),
-            on,
-        );
-        b.hits.push((card, target));
-        *y = card.bottom() + 12.0;
+    toggle_row(
+        b,
+        y,
+        "Start on Windows startup",
+        "Launch the tray app when you sign in.",
+        HitTarget::ToggleStartup,
+        crate::settings_run_on_startup(),
+        None,
+    );
+    toggle_row(
+        b,
+        y,
+        "Display Synapse warning",
+        "Warn when Synapse may override settings.",
+        HitTarget::ToggleWarning,
+        crate::settings_show_warning(),
+        None,
+    );
+    toggle_row(
+        b,
+        y,
+        "Switch output when off",
+        "Move Windows sound elsewhere, and back.",
+        HitTarget::ToggleOutputSwitch,
+        switch_on,
+        switch_problem,
+    );
+    // Always shown, and always clickable, even with the switch turned off: a
+    // user who has not chosen a device yet needs somewhere to choose one, and
+    // making the row appear only after the toggle is on hides the very thing
+    // that makes the toggle do anything.
+    device_row(b, y, Slot::Fallback);
+
+    toggle_row(
+        b,
+        y,
+        "Split game and chat",
+        "Calls use the chat channel.",
+        HitTarget::ToggleSplit,
+        split_on,
+        split_problem,
+    );
+    // These two are hidden while the split is off, unlike "Play through". The
+    // toggle immediately above them is what reveals them, so nothing is out of
+    // reach -- and three device rows stacked up, two of them inert, is a
+    // settings page that looks like it is asking for more than it is.
+    if split_on {
+        device_row(b, y, Slot::Game);
+        device_row(b, y, Slot::Chat);
     }
 
     // ---- appearance --------------------------------------------------------
@@ -1060,6 +1104,219 @@ fn settings_body(b: &mut Builder, _state: &HeadsetState, y: &mut f32) {
 
     // Back button
     let back = Rect::new(MARGIN, *y + 4.0, 88.0, 34.0);
+    b.p.push(Primitive::RoundRect {
+        rect: back,
+        radius: BUTTON_RADIUS,
+        fill: Some(bg_card()),
+        stroke: Some(border_card()),
+        stroke_w: 1.0,
+    });
+    back_icon(b, back.x + 18.0, back.center_y(), text_primary());
+    b.text(
+        Rect::new(back.x + 30.0, back.y, back.w - 34.0, back.h),
+        "Back",
+        FS_BODY,
+        W_SEMIBOLD,
+        text_primary(),
+        Align::Left,
+    );
+    b.hits.push((back, HitTarget::Back));
+    *y = back.bottom() + GAP * 0.5;
+}
+
+/// One settings row: a title, a line of description, and a switch.
+///
+/// `problem` replaces the description when the feature this row governs failed.
+/// The failure happens with nobody watching -- the user's evidence is that
+/// their sound did not move -- so the row has to be able to answer "why not"
+/// whenever they get round to asking.
+fn toggle_row(
+    b: &mut Builder,
+    y: &mut f32,
+    title: &str,
+    desc: &str,
+    target: HitTarget,
+    on: bool,
+    problem: Option<Problem>,
+) {
+    let card = Rect::new(MARGIN, *y, CONTENT_W, 66.0);
+    b.card(card, bg_card(), border_card());
+    // Titles are kept short enough to stay on one line. The box is vertically
+    // centred, so a wrapped title grows upward into the row above it and
+    // downward into its own description -- the same trap the description box's
+    // width is sized against.
+    b.text(
+        Rect::new(card.x + 16.0, card.y + 12.0, card.w - 76.0, 18.0),
+        title,
+        FS_BODY + 1.0,
+        W_SEMIBOLD,
+        text_primary(),
+        Align::Left,
+    );
+    // Sized to hold the longer description on one line.
+    //
+    // A failure borrows the muted-microphone red rather than introducing a
+    // colour: theme.rs sampled its palette from the mockups and says so, and
+    // inventing an amber here would be inventing a design decision nobody
+    // made. That red already means "this is not doing what you think".
+    b.text(
+        Rect::new(card.x + 16.0, card.y + 34.0, card.w - 62.0, 20.0),
+        problem.map(|p| p.short()).unwrap_or(desc),
+        FS_DESCRIPTION,
+        W_REGULAR,
+        if problem.is_some() {
+            state_muted()
+        } else {
+            text_secondary()
+        },
+        Align::Left,
+    );
+    toggle(
+        b,
+        Rect::new(card.right() - 58.0, card.center_y() - 11.0, 42.0, 22.0),
+        on,
+    );
+    b.hits.push((card, target));
+    *y = card.bottom() + 12.0;
+}
+
+/// One settings row naming the device chosen for `slot`, opening the picker.
+fn device_row(b: &mut Builder, y: &mut f32, slot: Slot) {
+    let card = Rect::new(MARGIN, *y, CONTENT_W, 62.0);
+    b.card(card, bg_card(), border_card());
+    b.text(
+        Rect::new(card.x + 16.0, card.y + 10.0, card.w - 48.0, 18.0),
+        slot_title(slot),
+        FS_BODY,
+        W_SEMIBOLD,
+        text_primary(),
+        Align::Left,
+    );
+    let chosen = crate::settings_output_choice(slot);
+    b.text(
+        Rect::new(card.x + 16.0, card.y + 30.0, card.w - 48.0, 20.0),
+        &output_choice_subtitle(slot, chosen.as_ref().map(|(n, p)| (n.as_str(), *p))),
+        FS_DESCRIPTION,
+        W_REGULAR,
+        // An absent device is stated in the ordinary secondary colour rather
+        // than an alarm colour: it is a fact about the machine right now, not
+        // an error the user made.
+        text_secondary(),
+        Align::Left,
+    );
+    chevron_icon(b, card.right() - 22.0, card.center_y(), text_muted());
+    b.hits.push((card, HitTarget::OpenOutputPicker(slot)));
+    *y = card.bottom() + 12.0;
+}
+
+/// What a slot's settings row is called.
+fn slot_title(slot: Slot) -> &'static str {
+    match slot {
+        Slot::Fallback => "Play through",
+        Slot::Game => "Game channel",
+        Slot::Chat => "Chat channel",
+    }
+}
+
+/// The picker's heading, and the one place a slot says what it is *for*.
+///
+/// It goes here rather than in the row title because the title shares its line
+/// with a chevron and the device name sits directly under it; "which Windows
+/// role does this take" has nowhere to go in that row, and the picker is where
+/// somebody is actually deciding.
+fn slot_caption(slot: Slot) -> &'static str {
+    match slot {
+        Slot::Fallback => "PLAY THROUGH WHEN POWERED OFF",
+        Slot::Game => "GAME CHANNEL — ORDINARY SOUND",
+        Slot::Chat => "CHAT CHANNEL — CALLS",
+    }
+}
+
+/// What a device row says beneath its title.
+///
+/// `chosen` is the stored device's name and whether it is present on the
+/// machine right now. A stored device that is currently absent is named rather
+/// than hidden: "Speakers (Realtek Audio)" being unplugged is worth seeing, and
+/// falling back to the prompt would suggest the setting was never made. The
+/// prompt names the slot, because "Choose a device" three times over does not
+/// say which of the three is still unanswered.
+pub fn output_choice_subtitle(slot: Slot, chosen: Option<(&str, bool)>) -> String {
+    match chosen {
+        Some((name, true)) => name.to_string(),
+        Some((name, false)) => format!("{name} — not connected"),
+        None => match slot {
+            Slot::Fallback => "Choose a device".to_string(),
+            Slot::Game => "Choose the game channel".to_string(),
+            Slot::Chat => "Choose the chat channel".to_string(),
+        },
+    }
+}
+
+/// The output picker: every active playback device, with the chosen one marked.
+///
+/// A list rather than a native dropdown because the panel is a layered window
+/// that hides as soon as it loses activation — opening a menu owned by another
+/// window would close the very panel the menu belongs to.
+fn output_body(b: &mut Builder, slot: Slot, y: &mut f32, ids: &mut Vec<String>) {
+    b.caption(
+        Rect::new(MARGIN, *y, CONTENT_W, 14.0),
+        slot_caption(slot),
+        text_secondary(),
+        Align::Left,
+    );
+    *y += 22.0;
+
+    let devices = crate::output_devices();
+    let chosen_id = crate::settings_output_choice_id(slot);
+
+    if devices.is_empty() {
+        let card = Rect::new(MARGIN, *y, CONTENT_W, 44.0);
+        b.card(card, bg_card(), border_card());
+        b.text(
+            Rect::new(card.x + 16.0, card.y, card.w - 32.0, card.h),
+            "No playback devices found",
+            FS_BODY,
+            W_REGULAR,
+            text_secondary(),
+            Align::Left,
+        );
+        *y = card.bottom() + 12.0;
+    }
+
+    // Every device, never a truncated list: silently dropping the one the user
+    // was looking for is worse than a tall panel on a machine with many.
+    for (i, (id, name)) in devices.iter().enumerate() {
+        let selected = chosen_id.as_deref() == Some(id.as_str());
+        let card = Rect::new(MARGIN, *y, CONTENT_W, 44.0);
+        b.p.push(Primitive::RoundRect {
+            rect: card,
+            radius: CARD_RADIUS,
+            fill: Some(if selected {
+                accent().with_alpha(0x22)
+            } else {
+                bg_card()
+            }),
+            stroke: Some(if selected { accent() } else { border_card() }),
+            stroke_w: 1.0,
+        });
+        b.text(
+            Rect::new(card.x + 16.0, card.y, card.w - 52.0, card.h),
+            name,
+            FS_BODY,
+            if selected { W_SEMIBOLD } else { W_REGULAR },
+            text_primary(),
+            Align::Left,
+        );
+        if selected {
+            check_icon(b, card.right() - 24.0, card.center_y(), accent());
+        }
+        b.hits.push((card, HitTarget::OutputChoice(i)));
+        ids.push(id.clone());
+        *y = card.bottom() + 8.0;
+    }
+
+    *y += 4.0;
+    let back = Rect::new(MARGIN, *y, 88.0, 34.0);
     b.p.push(Primitive::RoundRect {
         rect: back,
         radius: BUTTON_RADIUS,
@@ -1287,6 +1544,27 @@ fn refresh_icon(b: &mut Builder, cx: f32, cy: f32) {
     });
 }
 
+/// The "opens another screen" chevron, pointing the way the panel will move.
+fn chevron_icon(b: &mut Builder, cx: f32, cy: f32, c: Color) {
+    b.p.push(Primitive::Path {
+        points: vec![(cx - 2.5, cy - 4.5), (cx + 2.5, cy), (cx - 2.5, cy + 4.5)],
+        closed: false,
+        fill: None,
+        stroke: Some(c),
+        stroke_w: 1.6,
+    });
+}
+
+fn check_icon(b: &mut Builder, cx: f32, cy: f32, c: Color) {
+    b.p.push(Primitive::Path {
+        points: vec![(cx - 5.0, cy), (cx - 1.5, cy + 3.5), (cx + 5.0, cy - 4.0)],
+        closed: false,
+        fill: None,
+        stroke: Some(c),
+        stroke_w: 1.8,
+    });
+}
+
 fn back_icon(b: &mut Builder, cx: f32, cy: f32, c: Color) {
     b.p.push(Primitive::Path {
         points: vec![(cx + 3.0, cy - 4.5), (cx - 2.0, cy), (cx + 3.0, cy + 4.5)],
@@ -1380,8 +1658,8 @@ mod tests {
     fn value_text_matches_the_mockups_exactly() {
         use SliderParam::*;
         assert_eq!(format_value(GameChat, Some(10)), "Balanced");
-        assert_eq!(format_value(GameChat, Some(17)), "Game +7");
-        assert_eq!(format_value(GameChat, Some(3)), "Chat +7");
+        assert_eq!(format_value(GameChat, Some(17)), "Chat +7");
+        assert_eq!(format_value(GameChat, Some(3)), "Game +7");
         assert_eq!(format_value(Sidetone, Some(0)), "Off");
         assert_eq!(format_value(Sidetone, Some(14)), "14");
     }
@@ -1777,12 +2055,155 @@ mod tests {
     }
 
     #[test]
+    fn settings_offers_the_output_switch_and_a_way_to_choose_a_device() {
+        let p = build(&connected(), View::Settings, SliderParam::Sidetone, None);
+        for want in [
+            HitTarget::ToggleOutputSwitch,
+            HitTarget::ToggleSplit,
+            HitTarget::OpenOutputPicker(Slot::Fallback),
+        ] {
+            assert!(p.hits.iter().any(|(_, t)| *t == want), "{want:?} missing");
+        }
+    }
+
+    #[test]
+    fn the_picker_row_is_reachable_even_with_the_switch_turned_off() {
+        // The row is what makes the toggle mean anything, so hiding it until
+        // the toggle is on would leave a switch with nothing to switch to.
+        let p = build(&connected(), View::Settings, SliderParam::Sidetone, None);
+        let row = p
+            .hits
+            .iter()
+            .find(|(_, t)| *t == HitTarget::OpenOutputPicker(Slot::Fallback))
+            .expect("the picker row must always be present")
+            .0;
+        assert!(row.w > 0.0 && row.h > 0.0);
+    }
+
+    /// The channel rows follow the split toggle, and the toggle is what reveals
+    /// them -- so whichever way the machine running this has it set, the two
+    /// have to agree. A pair of rows shown with the split off would be inert
+    /// controls; a split turned on with no rows would be a setting that cannot
+    /// be finished.
+    #[test]
+    fn the_channel_rows_are_shown_exactly_when_the_split_is_on() {
+        let p = build(&connected(), View::Settings, SliderParam::Sidetone, None);
+        let shown = |slot| {
+            p.hits
+                .iter()
+                .any(|(_, t)| *t == HitTarget::OpenOutputPicker(slot))
+        };
+        let split_on = crate::settings_split_game_and_chat();
+        assert_eq!(shown(Slot::Game), split_on);
+        assert_eq!(shown(Slot::Chat), split_on);
+    }
+
+    /// The three slots are chosen from one picker drawing one list, so the only
+    /// thing telling a user which choice they are making is the wording. Two
+    /// slots sharing a title or a heading would make that guesswork.
+    #[test]
+    fn the_three_slots_are_told_apart_wherever_they_are_named() {
+        let slots = [Slot::Fallback, Slot::Game, Slot::Chat];
+        let titles: std::collections::BTreeSet<&str> =
+            slots.iter().map(|s| slot_title(*s)).collect();
+        let captions: std::collections::BTreeSet<&str> =
+            slots.iter().map(|s| slot_caption(*s)).collect();
+        assert_eq!(titles.len(), slots.len(), "{titles:?}");
+        assert_eq!(captions.len(), slots.len(), "{captions:?}");
+        // The heading is where a channel says which Windows role it takes, so
+        // it has to at least name the channel.
+        assert!(slot_caption(Slot::Game).contains("GAME"));
+        assert!(slot_caption(Slot::Chat).contains("CHAT"));
+    }
+
+    #[test]
+    fn the_output_subtitle_distinguishes_unset_from_unplugged() {
+        // Three different facts, and collapsing any two of them misleads: no
+        // choice made, a choice that is live, and a choice that is currently
+        // absent from the machine.
+        assert_eq!(
+            output_choice_subtitle(Slot::Fallback, None),
+            "Choose a device"
+        );
+        assert_eq!(
+            output_choice_subtitle(Slot::Fallback, Some(("Speakers (Realtek(R) Audio)", true))),
+            "Speakers (Realtek(R) Audio)"
+        );
+        let gone =
+            output_choice_subtitle(Slot::Fallback, Some(("Speakers (Realtek(R) Audio)", false)));
+        assert!(gone.starts_with("Speakers (Realtek(R) Audio)"), "{gone}");
+        assert!(gone.contains("not connected"), "{gone}");
+
+        // An unanswered channel says which channel it is waiting on: three
+        // rows all reading "Choose a device" would not.
+        let prompts: std::collections::BTreeSet<String> = [Slot::Fallback, Slot::Game, Slot::Chat]
+            .iter()
+            .map(|s| output_choice_subtitle(*s, None))
+            .collect();
+        assert_eq!(prompts.len(), 3, "{prompts:?}");
+    }
+
+    #[test]
+    fn the_picker_view_lists_ids_in_the_order_it_drew_them() {
+        // Off Windows the device list is empty, so this pins the invariant that
+        // holds either way: one id recorded per drawn choice, in the same order.
+        // A mismatch is how a click selects a device the user did not see.
+        let p = build(
+            &connected(),
+            View::Output(Slot::Fallback),
+            SliderParam::Sidetone,
+            None,
+        );
+        let choices: Vec<usize> = p
+            .hits
+            .iter()
+            .filter_map(|(_, t)| match t {
+                HitTarget::OutputChoice(i) => Some(*i),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(choices.len(), p.output_ids.len());
+        assert!(
+            choices.iter().enumerate().all(|(n, i)| n == *i),
+            "choice indices must be positional: {choices:?}"
+        );
+    }
+
+    #[test]
+    fn the_picker_view_can_always_be_left() {
+        // A view with a list that may be empty still needs a way out.
+        let p = build(
+            &connected(),
+            View::Output(Slot::Fallback),
+            SliderParam::Sidetone,
+            None,
+        );
+        assert!(p.hits.iter().any(|(_, t)| *t == HitTarget::Back));
+        assert!(p.track.is_none(), "the picker has no slider");
+    }
+
+    #[test]
+    fn only_the_main_view_offers_the_gear() {
+        // Settings and the picker are both places you arrive at, so both show
+        // Back. Offering Gear inside Settings would be a button to where you are.
+        let main = build(&connected(), View::Main, SliderParam::Sidetone, None);
+        assert!(main.hits.iter().any(|(_, t)| *t == HitTarget::Gear));
+        for view in [View::Settings, View::Output(Slot::Fallback)] {
+            let p = build(&connected(), view, SliderParam::Sidetone, None);
+            assert!(
+                !p.hits.iter().any(|(_, t)| *t == HitTarget::Gear),
+                "{view:?} must not offer the gear"
+            );
+        }
+    }
+
+    #[test]
     fn preview_overrides_the_device_value_while_dragging() {
         let p = build(&connected(), View::Main, SliderParam::GameChat, Some(17));
         let has_text = p
             .primitives
             .iter()
-            .any(|prim| matches!(prim, Primitive::Text { text, .. } if text == "Game +7"));
+            .any(|prim| matches!(prim, Primitive::Text { text, .. } if text == "Chat +7"));
         assert!(
             has_text,
             "the dragged value should be shown, not the stored one"

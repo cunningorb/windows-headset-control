@@ -6,8 +6,51 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Switch output when off stopped working, permanently and silently.** The record of where
+  the sound came from doubles as the "we owe you a move back" flag, and its presence was
+  read as "already switched". Endpoint ids do not live forever — a reinstalled driver or a
+  re-enumerated dongle retires one — so once that record named an endpoint the machine no
+  longer had, it could never be discharged and never be replaced. Every later power-off and
+  power-on did nothing at all. A record now counts only while its endpoint still exists,
+  and one that never reappears is given up on after about ten seconds rather than being
+  kept forever.
+
 ### Added
 
+- **The output switch says when it can't do its job.** No device chosen, the chosen device
+  unplugged, Windows refusing the change, or the device you were on having disappeared: each
+  raises a notification the first time and stays on the settings row until it clears.
+  Previously all four were `tracing` calls at a level no subscriber was listening to.
+- `headset-tray.exe --explain-output`, which reports what the switch would do for a
+  powered-off and a powered-on headset, and why, without moving anything.
+- **Split game and chat**, off by default. The headset presents two playback endpoints and
+  Windows keeps a separate default for calls, so the two exist precisely to be pointed at
+  different roles. Putting the sound *back* the way it was found cannot do that — it names
+  one endpoint — and setting that one endpoint into all three of Windows' roles overwrote a
+  communications default aimed at the chat channel, so the voices came out of the game
+  channel. Turn the setting on, pick a **Game channel** and a **Chat channel**, and a
+  headset coming back gets ordinary sound on the first and calls on the second. Left off,
+  nothing about the switch changes.
+
+## [0.1.0-alpha.2] - 2026-08-05
+
+### Fixed
+
+- **The game/chat slider ran backwards.** The panel labelled low values CHAT and high
+  values GAME, so dragging toward GAME moved the mix toward chat. `0x00` is full game and
+  `0x14` full chat — a direction the captures never established, since they record the
+  range and the clamps but not which end is which.
+
+### Added
+
+- **Switch output when off.** Turning the headset off moves Windows' sound to a
+  device you choose, and turning it back on puts it where it was. Off by default. The
+  trigger is the headset's link state — no power-button event exists in the protocol — so
+  an auto-sleep or going out of range counts too, debounced by two seconds. Setting the
+  default output has no documented Windows API; see
+  [`docs/undocumented-apis.md`](docs/undocumented-apis.md).
 - A light theme. It follows your Windows setting by default, with an **Appearance** override
   in settings. High contrast still wins over both.
 
