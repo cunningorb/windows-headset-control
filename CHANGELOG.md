@@ -4,6 +4,35 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0-alpha.4] - 2026-09-18
+
+### Fixed
+
+- **A dongle that has stopped answering now says so, instead of reading SEARCHING forever.**
+  The dongle can wedge: it stays enumerated, Windows reports every interface healthy, the
+  control collection still resolves and scores correctly, and it answers nothing at all.
+  The tray had no way to describe that. `connected` was `Option<bool>` and `None` meant
+  only "not read yet", which the panel drew as SEARCHING — the same thing it shows in the
+  first second after launch — so a wedged dongle and a cold start looked identical, and
+  neither the header nor the tooltip ever mentioned the one thing that clears it. This is
+  not a guess about the cause: the first parameter the refresh asks for is answered by the
+  dongle out of its own state rather than proxied over the wireless link, and it answers
+  even with the headset powered off, so silence there is not "the headset is away" — it is
+  the dongle itself having gone quiet. The header now reads NOT RESPONDING · REPLUG DONGLE
+  and the tooltip says to unplug it and plug it back in.
+- **Silence is no longer reported as a malformed response.** A request that went unanswered
+  came back as `ProtocolMismatch`, the error that means the device replied and the reply
+  was wrong. Two different conditions with different causes and different remedies shared
+  one variant, and the only way to tell them apart was to match on the text of the message,
+  so the tray did not try. Not answering at all is now its own error carrying the parameter,
+  the wait, and how many unrelated events arrived. The wording callers see is unchanged.
+- **The device thread stopped hammering a dongle that was never going to answer.** A failed
+  refresh left the refresh timer untouched, so the worker re-ran the whole read sequence
+  every couple of seconds — each attempt blocking for a full exchange timeout — for as long
+  as the condition lasted, reporting it only at a log level nothing was listening to.
+  Retries now back off, and once the dongle is judged unresponsive they drop to one attempt
+  every fifteen seconds.
+
 ## [0.2.0-alpha.3] - 2026-09-04
 
 ### Fixed

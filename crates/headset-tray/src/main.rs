@@ -245,6 +245,7 @@ fn run_render_panel() {
         mic_mute_hardware: Some(false),
         mic_mute_os: Some(false),
         warn_vendor_software: true,
+        dongle_silent: false,
     };
 
     let mut cases: Vec<(&str, HeadsetState, View, SliderParam)> = Vec::new();
@@ -284,6 +285,27 @@ fn run_render_panel() {
         nowarn,
         View::Main,
         SliderParam::Sidetone,
+    ));
+
+    // The wedged dongle: the control channel is open and answering nothing, so
+    // every proxied value is unknown and the header carries the remedy.
+    let silent = HeadsetState {
+        device_name: base.device_name.clone(),
+        connected: None,
+        battery: None,
+        sidetone: None,
+        game_chat: None,
+        noise: None,
+        mic_mute_hardware: None,
+        mic_mute_os: None,
+        warn_vendor_software: false,
+        dongle_silent: true,
+    };
+    cases.push((
+        "dongle-not-responding",
+        silent,
+        View::Main,
+        SliderParam::GameChat,
     ));
 
     cases.push((

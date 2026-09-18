@@ -26,6 +26,24 @@ pub enum DeviceError {
     #[error("response failed validation: {0}")]
     ProtocolMismatch(String),
 
+    /// The device acknowledged nothing at all within the exchange window.
+    ///
+    /// Deliberately distinct from [`DeviceError::ProtocolMismatch`], which means
+    /// the device answered and the answer was wrong. Silence is a different
+    /// condition with a different cause and a different remedy, and folding the
+    /// two together left callers unable to tell them apart: the tray could only
+    /// match on an error string, so it treated a dongle that had stopped
+    /// talking as a device it had not finished finding.
+    #[error(
+        "no response for parameter {param:#04x} within {waited:?}; {events_seen} unrelated \
+         event(s) arrived while waiting"
+    )]
+    NoResponse {
+        param: u8,
+        waited: std::time::Duration,
+        events_seen: usize,
+    },
+
     #[error("device firmware is not supported: {0}")]
     UnsupportedFirmware(String),
 

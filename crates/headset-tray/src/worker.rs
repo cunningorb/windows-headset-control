@@ -33,6 +33,19 @@ const LISTEN_SLICE: Duration = Duration::from_millis(500);
 /// only to heal a missed one, not to drive the UI.
 const FULL_REFRESH: Duration = Duration::from_secs(60);
 
+/// Consecutive silent refreshes before the tray calls the dongle unresponsive.
+/// One missed exchange is ordinary. Three in a row on `0x20`, which the dongle
+/// answers out of its own state rather than proxying to the headset, is not.
+const SILENCE_THRESHOLD: u32 = 3;
+
+/// How soon to retry a refresh that failed without killing the session.
+const RETRY_AFTER_FAILURE: Duration = Duration::from_secs(2);
+
+/// Retry interval once the dongle has been declared unresponsive. A wedged
+/// dongle stays wedged until it is replugged and every attempt costs a full
+/// exchange timeout, so asking constantly buys nothing and keeps a thread busy.
+const SILENT_RETRY: Duration = Duration::from_secs(15);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
     SetSidetone(u8),
@@ -61,6 +74,12 @@ pub fn run<B: HidBackend, F: Fn(HeadsetState)>(
     let mut state = HeadsetState::default();
     let mut session: Option<ControlSession> = None;
     let mut since_refresh = Duration::ZERO;
+    // How long to wait before the next `refresh_all`, which varies with the
+    // last outcome rather than being a single constant: a healthy device needs
+    // only the slow backstop, a transiently failing one should be retried
+    // sooner, and a silent one should be left mostly alone.
+    let mut refresh_due = Duration::ZERO;
+    let mut silent_reads: u32 = 0;
 
     loop {
         // (Re)establish the session. A failure here is normal, not fatal: the
@@ -72,11 +91,17 @@ pub fn run<B: HidBackend, F: Fn(HeadsetState)>(
                     // resolves, so the header is right before any read lands.
                     state.device_name = s.info().product.clone();
                     session = Some(s);
-                    since_refresh = FULL_REFRESH; // force an immediate read
+                    since_refresh = Duration::ZERO;
+                    refresh_due = Duration::ZERO; // read immediately
                 }
                 Err(e) => {
                     tracing::debug!("control session unavailable: {e}");
                     state.connected = None;
+                    // Absent is not silent. There is no dongle to advise
+                    // replugging, and leaving the flag set would keep that
+                    // advice on screen after the dongle was pulled.
+                    state.dongle_silent = false;
+                    silent_reads = 0;
                     notify(state.clone());
                     match commands.recv_timeout(Duration::from_secs(3)) {
                         Ok(Command::Shutdown) | Err(RecvTimeoutError::Disconnected) => return,
@@ -87,10 +112,13 @@ pub fn run<B: HidBackend, F: Fn(HeadsetState)>(
         }
         let Some(s) = session.as_mut() else { continue };
 
-        if since_refresh >= FULL_REFRESH {
+        if since_refresh >= refresh_due {
+            since_refresh = Duration::ZERO;
             match refresh_all(s, &mut state) {
                 Ok(()) => {
-                    since_refresh = Duration::ZERO;
+                    silent_reads = 0;
+                    state.dongle_silent = false;
+                    refresh_due = FULL_REFRESH;
                     notify(state.clone());
                 }
                 Err(e) if is_fatal(&e) => {
@@ -98,7 +126,28 @@ pub fn run<B: HidBackend, F: Fn(HeadsetState)>(
                     session = None;
                     continue;
                 }
-                Err(e) => tracing::debug!("refresh failed: {e}"),
+                Err(e) => {
+                    // Silence is the wedged-dongle signature and is reported.
+                    // Any other non-fatal error is still just logged: it means
+                    // the device answered, so it is talking.
+                    if matches!(e, DeviceError::NoResponse { .. }) {
+                        silent_reads = silent_reads.saturating_add(1);
+                        if silent_reads >= SILENCE_THRESHOLD && !state.dongle_silent {
+                            tracing::warn!(
+                                "dongle answered none of the last {silent_reads} reads; \
+                                 reporting it as unresponsive"
+                            );
+                            state.dongle_silent = true;
+                            notify(state.clone());
+                        }
+                    }
+                    refresh_due = if state.dongle_silent {
+                        SILENT_RETRY
+                    } else {
+                        RETRY_AFTER_FAILURE
+                    };
+                    tracing::debug!("refresh failed: {e}");
+                }
             }
         }
 
