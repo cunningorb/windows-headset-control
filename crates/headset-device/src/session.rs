@@ -195,11 +195,11 @@ impl ControlSession {
             }
         }
 
-        Err(DeviceError::ProtocolMismatch(format!(
-            "no response for parameter {param:#04x} within {:?}; {events_seen} unrelated \
-             event(s) arrived while waiting",
-            self.exchange_timeout
-        )))
+        Err(DeviceError::NoResponse {
+            param,
+            waited: self.exchange_timeout,
+            events_seen,
+        })
     }
 
     /// Reads input reports until the deadline, collecting decoded events.
@@ -349,6 +349,23 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("no response"), "{msg}");
         assert!(msg.contains("0 unrelated event"), "{msg}");
+
+        // The variant matters as much as the wording. Silence used to arrive as
+        // `ProtocolMismatch`, which says the device answered wrongly, and a
+        // caller that wanted to act on "answered nothing" had no choice but to
+        // match on this string.
+        match err {
+            DeviceError::NoResponse {
+                param,
+                waited,
+                events_seen,
+            } => {
+                assert_eq!(param, Param::Battery.id());
+                assert_eq!(waited, Duration::from_millis(300));
+                assert_eq!(events_seen, 0);
+            }
+            other => panic!("silence should be NoResponse, got {other:?}"),
+        }
     }
 
     #[test]

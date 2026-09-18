@@ -483,10 +483,20 @@ fn header(b: &mut Builder, state: &HeadsetState, view: View, y: &mut f32) {
         Align::Left,
     );
 
-    let status = match state.connected {
-        Some(true) => format!("CONNECTED · {LINK_TYPE_LABEL}"),
-        Some(false) => "DISCONNECTED".to_string(),
-        None => "SEARCHING".to_string(),
+    // A silent dongle outranks the link state, because the link state is
+    // exactly what a silent dongle has stopped telling us. Reporting SEARCHING
+    // here is what made a wedge indistinguishable from a cold start.
+    let status = if state.dongle_silent {
+        // Short by necessity: this caption is letter-spaced and sits beside the
+        // gear button, so a remedy does not fit here without wrapping over the
+        // device name. The banner below carries it instead.
+        "NOT RESPONDING".to_string()
+    } else {
+        match state.connected {
+            Some(true) => format!("CONNECTED · {LINK_TYPE_LABEL}"),
+            Some(false) => "DISCONNECTED".to_string(),
+            None => "SEARCHING".to_string(),
+        }
     };
     b.caption(
         Rect::new(MARGIN + 16.0, *y + 22.0, CONTENT_W - 60.0, 14.0),
@@ -764,7 +774,17 @@ fn main_body(
     noise_section(b, state, y, level_track);
 
     // ---- warning banner ----------------------------------------------------
-    if state.warn_vendor_software {
+    // A silent dongle outranks the Synapse warning. A caution that something
+    // may override these settings is noise when nothing can read or write them
+    // at all, and only one banner fits.
+    let banner_text = if state.dongle_silent {
+        Some("Dongle not responding. Unplug it and plug it back in.")
+    } else if state.warn_vendor_software {
+        Some("Synapse is running and may override these settings.")
+    } else {
+        None
+    };
+    if let Some(message) = banner_text {
         let banner = Rect::new(MARGIN, *y, CONTENT_W, BANNER_H);
         b.card(banner, bg_banner(), border_banner());
         warning_icon(b, banner.x + 18.0, banner.center_y(), text_muted());
@@ -775,7 +795,7 @@ fn main_body(
                 banner.w - 44.0,
                 banner.h - 16.0,
             ),
-            "Synapse is running and may override these settings.",
+            message,
             FS_BODY - 1.0,
             W_REGULAR,
             text_muted(),
@@ -1601,6 +1621,7 @@ mod tests {
             mic_mute_hardware: Some(false),
             mic_mute_os: Some(false),
             warn_vendor_software: true,
+            dongle_silent: false,
         }
     }
 
@@ -2195,6 +2216,48 @@ mod tests {
                 "{view:?} must not offer the gear"
             );
         }
+    }
+
+    #[test]
+    fn a_silent_dongle_is_not_reported_as_searching() {
+        // The whole point of the state: SEARCHING is what the panel shows
+        // while starting up, so leaving a wedged dongle on it gave the user no
+        // way to tell a cold start from a dongle that had stopped answering.
+        let mut s = connected();
+        s.connected = None;
+        s.dongle_silent = true;
+        let p = build(&s, View::Main, SliderParam::GameChat, None);
+        let text: Vec<&str> = p
+            .primitives
+            .iter()
+            .filter_map(|prim| match prim {
+                Primitive::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !text.contains(&"SEARCHING"),
+            "a silent dongle must not read as SEARCHING: {text:?}"
+        );
+        assert!(
+            text.iter()
+                .any(|t| t.contains("Unplug it and plug it back in")),
+            "the panel should name the remedy: {text:?}"
+        );
+    }
+
+    #[test]
+    fn a_silent_dongle_outranks_a_stale_connected_reading() {
+        // `connected` may still hold the last value read before the dongle went
+        // quiet. Showing CONNECTED over a channel that answers nothing is the
+        // worst of the options.
+        let mut s = connected();
+        s.dongle_silent = true;
+        let p = build(&s, View::Main, SliderParam::GameChat, None);
+        let has_connected = p.primitives.iter().any(
+            |prim| matches!(prim, Primitive::Text { text, .. } if text.starts_with("CONNECTED")),
+        );
+        assert!(!has_connected, "a silent dongle must not read as CONNECTED");
     }
 
     #[test]

@@ -32,6 +32,16 @@ pub struct HeadsetState {
     pub mic_mute_hardware: Option<bool>,
     /// The Windows capture endpoint's mute, which is a separate state.
     pub mic_mute_os: Option<bool>,
+    /// Set when the control channel opened but the dongle answered nothing.
+    ///
+    /// Distinct from `connected: None`, which says only that the link state has
+    /// not been read yet. `0x20` is answered by the dongle itself and returns a
+    /// value even with the headset powered off, so silence there is positive
+    /// evidence that the dongle has stopped talking rather than that the
+    /// headset is away. The remedy is a replug, and the tray has to say so: it
+    /// rendered this as SEARCHING indefinitely, which is the same thing it
+    /// shows while starting up and told the user nothing.
+    pub dongle_silent: bool,
     /// Whether to warn that Razer's engine is running and may contend for
     /// settings. This is detection **and** the user's preference combined: the
     /// warning is suppressed when they have turned it off, so a single flag is
@@ -58,6 +68,7 @@ impl HeadsetState {
         self.game_chat = from.game_chat;
         self.noise = from.noise;
         self.mic_mute_hardware = from.mic_mute_hardware;
+        self.dongle_silent = from.dongle_silent;
     }
 
     /// This state as the panel should draw it while a noise write is in flight.
@@ -138,6 +149,10 @@ impl HeadsetState {
     /// `NOTIFYICONDATAW::szTip`.
     pub fn tooltip(&self) -> String {
         let mut s = String::from("BlackShark V3 Pro");
+        if self.dongle_silent {
+            s.push_str(" - dongle not responding; unplug it and plug it back in");
+            return s;
+        }
         match (self.connected, self.battery) {
             (Some(false), _) => s.push_str(" - off"),
             (_, Some(b)) => s.push_str(&format!(" - battery {b}%")),
@@ -165,6 +180,36 @@ mod tests {
             role: Role::Response,
             payload: payload.to_vec(),
         }
+    }
+
+    #[test]
+    fn a_silent_dongle_tooltip_names_the_remedy() {
+        let s = HeadsetState {
+            dongle_silent: true,
+            ..HeadsetState::default()
+        };
+        let tip = s.tooltip();
+        assert!(tip.contains("not responding"), "{tip}");
+        assert!(tip.contains("plug it back in"), "{tip}");
+        assert!(
+            !tip.contains("battery unknown"),
+            "an unresponsive dongle should not report on a battery it cannot read: {tip}"
+        );
+        assert!(tip.len() <= 127, "szTip limit: {}", tip.len());
+    }
+
+    #[test]
+    fn the_device_snapshot_carries_the_silent_flag() {
+        // The worker owns this field. If `apply_device_snapshot` does not copy
+        // it, the UI thread keeps its own stale `false` and the warning never
+        // appears -- the same class of bug the mic/vendor split documents.
+        let mut ui = HeadsetState::default();
+        let worker = HeadsetState {
+            dongle_silent: true,
+            ..HeadsetState::default()
+        };
+        ui.apply_device_snapshot(&worker);
+        assert!(ui.dongle_silent);
     }
 
     #[test]
